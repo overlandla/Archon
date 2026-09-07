@@ -1,14 +1,14 @@
 """Controlled component checks. These are not runtime conformance evidence."""
-from concurrent.futures import ThreadPoolExecutor
 import json
 import os
-from pathlib import Path
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
+from .admission import Rejected, Release, Supervisor
 from .journal import AdmissionConflict, Journal
 from .model_broker import validate_body
-from .admission import Rejected, Release, Supervisor
 from .staging import stage
 
 
@@ -116,7 +116,7 @@ class ModelBoundaryTests(unittest.TestCase):
 
 class AdmissionOrderTests(unittest.TestCase):
     def test_queued_staleness_and_capture_mismatch_precede_every_repository_operation(self):
-        release = Release("fixture", *("a" * 64 for _ in range(5)))
+        release = Release("fixture", *("a" * 64 for _ in range(7)))
         for rejection in ("stale_scope", "stale_guidance", "source_mismatch", "unreachable"):
             with self.subTest(rejection=rejection), tempfile.TemporaryDirectory() as directory:
                 events = []
@@ -124,7 +124,7 @@ class AdmissionOrderTests(unittest.TestCase):
                     def capture(self, run_id, selection):
                         events.append("capture")
                         return "b" * 64 if rejection == "source_mismatch" else release.closure_revision
-                    def validate_authority(self, selection):
+                    def validate_authority(self, run_id, selection):
                         events.append("authority")
                         if rejection == "unreachable":
                             raise OSError("unreachable")
@@ -145,14 +145,14 @@ class AdmissionOrderTests(unittest.TestCase):
                     supervisor.dequeue(row["run_id"], result["revision"])
 
     def test_invocation_failure_and_replay_do_not_repeat_worktree_or_worker(self):
-        release = Release("fixture", *("a" * 64 for _ in range(5)))
+        release = Release("fixture", *("a" * 64 for _ in range(7)))
         with tempfile.TemporaryDirectory() as directory:
             events = []
             class Policy:
                 def capture(self, run_id, selection):
                     events.append("capture")
                     return release.closure_revision
-                def validate_authority(self, selection):
+                def validate_authority(self, run_id, selection):
                     events.append("authority")
                 def refresh_and_create_worktree(self, run_id, selection):
                     events.append("repository")

@@ -8,12 +8,12 @@ from __future__ import annotations
 import ctypes
 import errno
 import os
-from pathlib import Path
 import platform
 import signal
 import subprocess
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 
 
 class ConfinementUnavailable(RuntimeError):

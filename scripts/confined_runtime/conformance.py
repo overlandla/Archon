@@ -9,10 +9,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-from pathlib import Path
 import subprocess
 import tempfile
 import threading
+from pathlib import Path
 from uuid import uuid4
 
 from .linux import WorkerMounts, arguments, run
@@ -83,6 +83,8 @@ def probe(executable: Path, node: Path) -> dict:
         if prepared.returncode:
             raise RuntimeError("fixture_prepare_failed", prepared.stderr[-2048:])
         request = json.loads(sealed.read_text())
+        request["authoritativeContext"] = "Synthetic current authority for the controlled confinement probe."
+        sealed.write_text(json.dumps(request))
         capture = Path(request["captureRoot"])
         captured_yaml = next(capture.rglob("confined-proof.yaml"))
         expected_bytes = captured_yaml.read_bytes()
@@ -103,6 +105,9 @@ assert not Path(canary).exists()
 assert not os.environ.get("HOST_SECRET")
 assert not Path("/opt/archon-data").exists()
 assert not Path("/var/run/docker.sock").exists()
+engine_pid = int(os.environ["ARCHON_CONFINED_ENGINE_PID"])
+denied("engine-memory", lambda: open(f"/proc/{engine_pid}/mem", "rb"))
+denied("engine-environment", lambda: Path(f"/proc/{engine_pid}/environ").read_bytes())
 denied("source-write", lambda: Path(capture).write_text("mutated"))
 link = Path("/workspace/escape")
 link.unlink(missing_ok=True)

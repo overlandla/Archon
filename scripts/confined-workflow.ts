@@ -1,5 +1,6 @@
 /** Private supervisor/worker entry. Never install as a general launch endpoint. */
 import { readFile, writeFile } from 'node:fs/promises';
+import { closeSync, writeSync } from 'node:fs';
 import { BUNDLED_GIT_COMMIT, BUNDLED_VERSION } from '@archon/paths';
 import {
   prepareConfinedWorkflow,
@@ -19,5 +20,14 @@ const result =
   mode === 'prepare'
     ? await prepareConfinedWorkflow(input)
     : { status: await executeConfinedWorkflow(input) };
+if (mode === 'run' && process.env.ARCHON_CONTROL_FD !== undefined && 'status' in result) {
+  const fd = Number(process.env.ARCHON_CONTROL_FD);
+  // executeConfinedWorkflow validated this descriptor, disabled dumping and set
+  // CLOEXEC before untrusted descendants could exist. Do not use output files
+  // or an HTTP worker report as an authoritative execution acknowledgement.
+  const runId = (input as { runId: string }).runId;
+  writeSync(fd, JSON.stringify({ run_id: runId, state: result.status }));
+  closeSync(fd);
+}
 await writeFile(response, JSON.stringify(result));
 process.exit(0);

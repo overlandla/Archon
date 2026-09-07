@@ -1,6 +1,6 @@
 /** Real capture and SQLite seams, isolated from package-level module mocks. */
 import { afterAll, describe, expect, test } from 'bun:test';
-import { mkdtemp, mkdir, writeFile, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, symlink, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { removeTempTree } from '@archon/paths/test-utils';
@@ -38,7 +38,10 @@ async function fixture(settings = '') {
 describe('confined engine entry', () => {
   test('retains captured identity and rejects changed executed bytes', async () => {
     const input = await fixture();
-    const sealed = await prepareConfinedWorkflow(input);
+    const sealed = {
+      ...(await prepareConfinedWorkflow(input)),
+      authoritativeContext: 'Synthetic current authority',
+    };
     expect(sealed.workflowRevision).toMatch(/^[0-9a-f]{64}$/);
     await expect(executeConfinedWorkflow({ ...sealed, workflowIdentity: 'other' })).rejects.toThrow(
       'confined_identity_mismatch'
@@ -48,6 +51,17 @@ describe('confined engine entry', () => {
     ).rejects.toThrow();
     await writeFile(join(sealed.captureRoot, 'project/.archon/workflows/proof.yaml'), 'changed');
     await expect(executeConfinedWorkflow(sealed)).rejects.toThrow();
+  });
+
+  test('rejects changed executable mode even when native source bytes match', async () => {
+    const sealed = {
+      ...(await prepareConfinedWorkflow(await fixture())),
+      authoritativeContext: 'Synthetic current authority',
+    };
+    await chmod(join(sealed.captureRoot, 'project/.archon/workflows/proof.yaml'), 0o755);
+    await expect(executeConfinedWorkflow(sealed)).rejects.toThrow(
+      'confined_executable_revision_mismatch'
+    );
   });
 
   test.each([

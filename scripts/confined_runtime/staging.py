@@ -1,8 +1,8 @@
 """Bounded descriptor-relative copy into a new supervisor-owned release directory."""
 import os
-from pathlib import Path
 import shutil
 import stat
+from pathlib import Path
 
 
 def stage(source: Path, destination: Path) -> None:

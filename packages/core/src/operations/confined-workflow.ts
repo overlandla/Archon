@@ -3,8 +3,9 @@
  * This module neither accepts network requests nor establishes confinement.
  */
 import { isDeepStrictEqual } from 'node:util';
+import { createHash } from 'node:crypto';
 import { lstat, readdir, readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { z } from '@hono/zod-openapi';
 import { getHomeWorkflowsPath, getHomeCommandsPath, getHomeScriptsPath } from '@archon/paths';
 import { CodexProvider } from '@archon/providers/codex/provider';
@@ -29,6 +30,7 @@ import type { WorkflowDefinition } from '@archon/workflows/schemas/workflow';
 import { SqliteAdapter } from '../db/adapters/sqlite';
 import { withDatabase } from '../db/connection';
 import { createWorkflowStore } from '../workflows/store-adapter';
+import { protectConfinedProcess } from './confined-process';
 
 export const confinedInvocationSchema = z.strictObject({
   runId: z.uuid(),
@@ -44,8 +46,68 @@ export const sealedInvocationSchema = confinedInvocationSchema.extend({
   captureRoot: z.string().startsWith('/'),
   workflowRevision: z.string().regex(/^[0-9a-f]{64}$/),
   sourceConfig: workflowSourceConfigSchema,
+  executableRevision: z.string().regex(/^[0-9a-f]{64}$/),
 });
 export type SealedInvocation = z.infer<typeof sealedInvocationSchema>;
+
+export const executionInvocationSchema = sealedInvocationSchema.extend({
+  // Transient definitions retrieved by the trusted supervisor after dequeue.
+  // This data is not an authoring scope or part of the executable closure.
+  authoritativeContext: z
+    .string()
+    .min(1)
+    .max(8 * 1024 * 1024),
+  runtimeIdentity: z
+    .strictObject({
+      workerRevision: z.string().regex(/^[0-9a-f]{64}$/),
+      providerRevision: z.string().regex(/^[0-9a-f]{64}$/),
+      nativeConfigurationRevision: z.string().regex(/^[0-9a-f]{64}$/),
+    })
+    .optional(),
+  repositorySelection: z
+    .strictObject({
+      base: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_/-]{0,199}$/),
+      commit: z.string().regex(/^[0-9a-f]{40}$/),
+    })
+    .optional(),
+});
+
+/** Cross-language v1 closure: source settings, workflow identity, bytes and exec modes. */
+export async function immutableClosureRevision(
+  root: string,
+  identity: string,
+  config: z.infer<typeof workflowSourceConfigSchema>
+): Promise<string> {
+  await requireStagedTree(root);
+  if (
+    config.load_default_commands ||
+    config.load_default_workflows ||
+    config.command_folder !== undefined
+  )
+    throw new Error('confined_source_config_unsupported');
+  const hash = createHash('sha256');
+  hash.update('archon-immutable-closure-v1\0' + identity + '\0');
+  hash.update('{"load_default_commands":false,"load_default_workflows":false}\0');
+  const files: string[] = [];
+  async function collect(path: string): Promise<void> {
+    for (const entry of await readdir(path, { withFileTypes: true })) {
+      const full = join(path, entry.name);
+      if (entry.isDirectory()) await collect(full);
+      else files.push(full);
+    }
+  }
+  await collect(root);
+  for (const file of files.sort()) {
+    const path = relative(root, file);
+    if (path === 'manifest.json') continue;
+    if (!/^[A-Za-z0-9_.@+/-]+$/.test(path)) throw new Error('confined_source_path_unsupported');
+    const info = await lstat(file);
+    const content = await readFile(file);
+    hash.update(path + '\0' + ((info.mode & 0o111) !== 0 ? 'x' : '-') + '\0');
+    hash.update(createHash('sha256').update(content).digest('hex') + '\n');
+  }
+  return hash.digest('hex');
+}
 
 function dependencies(input: ConfinedInvocation): WorkflowDeps {
   registerBuiltinProviders();
@@ -229,6 +291,11 @@ export async function prepareConfinedWorkflow(raw: unknown): Promise<SealedInvoc
         captureRoot: finalized.captureRoot,
         workflowRevision: finalized.manifest.digest,
         sourceConfig: finalized.manifest.source_config,
+        executableRevision: await immutableClosureRevision(
+          finalized.captureRoot,
+          input.workflowIdentity,
+          finalized.manifest.source_config
+        ),
       };
     });
   } finally {
@@ -241,7 +308,8 @@ export async function prepareConfinedWorkflow(raw: unknown): Promise<SealedInvoc
  * output as admission identity, retry permission or verification evidence.
  */
 export async function executeConfinedWorkflow(raw: unknown): Promise<string> {
-  const input = sealedInvocationSchema.parse(raw);
+  protectConfinedProcess();
+  const input = executionInvocationSchema.parse(raw);
   const database = new SqliteAdapter(':memory:');
   try {
     return await withDatabase(database, async () => {
@@ -251,6 +319,14 @@ export async function executeConfinedWorkflow(raw: unknown): Promise<string> {
         throw new Error('confined_config_mismatch');
       if (capture.manifest.workflow_name !== input.workflowIdentity)
         throw new Error('confined_identity_mismatch');
+      if (
+        (await immutableClosureRevision(
+          input.captureRoot,
+          input.workflowIdentity,
+          input.sourceConfig
+        )) !== input.executableRevision
+      )
+        throw new Error('confined_executable_revision_mismatch');
       const prepared: PreparedWorkflowSource = {
         runId: input.runId,
         ...capture,
@@ -274,7 +350,7 @@ export async function executeConfinedWorkflow(raw: unknown): Promise<string> {
         input.runId,
         input.cwd,
         workflow,
-        '',
+        input.authoritativeContext,
         input.runId,
         { preparedSource: prepared }
       );

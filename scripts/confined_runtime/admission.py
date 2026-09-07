@@ -4,9 +4,9 @@ No deployment is supported by this module alone. Policy implementations are
 trusted supervisor code, never callbacks supplied in a launch request. A release
 must validate and pin those implementations along with the worker and provider.
 """
-from dataclasses import dataclass
 import json
 import re
+from dataclasses import dataclass
 from typing import Protocol
 
 from .journal import Journal, canonical
@@ -28,6 +28,8 @@ class Release:
     provider_revision: str
     confinement_revision: str
     policy_revision: str
+    native_configuration_revision: str
+    authority_configuration_revision: str
 
     def selection(self):
         values = vars(self)
@@ -41,11 +43,11 @@ class Release:
 class TrustedPolicy(Protocol):
     def capture(self, run_id: str, selection: dict) -> str:
         """Stage a bounded complete closure without repository mutation; return its digest."""
-    def validate_authority(self, selection: dict) -> None:
+    def validate_authority(self, run_id: str, selection: dict) -> None:
         """Retrieve current source authority after dequeue, fail closed on every read error."""
     def refresh_and_create_worktree(self, run_id: str, selection: dict) -> None:
         """Refresh only approved base and create a private worktree; retain resolved commit."""
-    def invoke(self, run_id: str, selection: dict) -> None:
+    def invoke(self, run_id: str, selection: dict) -> str:
         """Invoke the sealed engine once under independently enforced confinement."""
 
 
@@ -56,11 +58,13 @@ class Supervisor:
     def admit(self, deployment: str, project: int, correlation: str, selection: dict) -> dict:
         # Requests cannot choose an executable, model binary, enforcement policy
         # or closure format through a version string/capability advertisement.
-        if selection.get("release") != self.release.selection():
-            raise Rejected("unsupported")
-        if selection.get("source") != {"deployment": deployment, "project": project}:
-            raise Rejected("unsupported")
-        return self.journal.admit(deployment, project, correlation, selection)
+        row = self.journal.admit(deployment, project, correlation, selection)
+        if (selection.get("release") != self.release.selection()
+                or selection.get("source") != {"deployment": deployment, "project": project}):
+            if row["state"] == "admitted":
+                row = self.journal.transition(row["run_id"], row["revision"], "check")
+                row = self.journal.transition(row["run_id"], row["revision"], "unsupported")
+        return row
 
     def dequeue(self, run_id: str, expected_revision: int) -> dict:
         # Durable exclusive ownership precedes even repository refresh. Any
@@ -73,10 +77,13 @@ class Supervisor:
             captured = self.policy.capture(run_id, selection)
             if captured != self.release.closure_revision:
                 raise Rejected("source_mismatch")
-            self.policy.validate_authority(selection)
+            self.policy.validate_authority(run_id, selection)
             self.policy.refresh_and_create_worktree(run_id, selection)
             row = self.journal.transition(run_id, row["revision"], "invoke")
-            self.policy.invoke(run_id, selection)
+            outcome = self.policy.invoke(run_id, selection)
+            if outcome not in ("completed", "failed", "paused"):
+                raise RuntimeError("untrusted_engine_outcome")
+            self.journal.record_fact(run_id, "engine", {"outcome": outcome})
             return self.journal.transition(run_id, row["revision"], "finish")
         except Rejected as exc:
             if row["state"] != "checking":
@@ -86,3 +93,8 @@ class Supervisor:
             # Includes partial worktree preparation, launch failure and a lost
             # worker result. Never infer from an exception that invocation is safe.
             return self.journal.transition(run_id, row["revision"], "uncertain")
+
+        finally:
+            cleanup = getattr(self.policy, "cleanup", None)
+            if cleanup is not None:
+                cleanup(run_id)

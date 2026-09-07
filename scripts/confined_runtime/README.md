@@ -1,93 +1,126 @@
-# Experimental confined worker — Theseus #778
+# Immutable confined handoff runtime — Theseus #778
 
-This is a **draft source experiment, not a supported runtime release**. Do not
-install it over the configured Archon service, expose a launch endpoint, use
-operator credentials, or enable the Theseus connector with it.
+This companion runtime implements the source contract for
+[Theseus #778](https://github.com/overlandla/theseus/issues/778). It is based on
+Archon v0.10.0 `c8f439a0269fee0f33f2f9f64752d66860112274`, the inspected installed
+binary revision. It does not replace the existing GitHub/Codex/Telegram service.
 
-The source base is Archon v0.10.0,
-`c8f439a0269fee0f33f2f9f64752d66860112274`, matching the installed compiled
-runtime inspected on LXC 121. The older `/opt/archon` source directory is not the
-revision of that installed binary. These changes use an isolated development
-branch; the existing GitHub, Codex and Telegram integration is unchanged.
+The Theseus adapter registry remains empty. These source changes and controlled
+synthetic tests are **not an attestation of an operator release or live acceptance**.
+Do not enable the connector merely because a runtime advertises this protocol.
 
-## What is implemented
+## Runtime composition
 
-- A private engine entry prepares and checks the actual complete captured source,
-  rejects a narrow set of unsupported workflow shapes and settings, and consumes
-  that final capture under a read-only mount. It uses invocation-scoped in-memory
-  SQLite so generated processes cannot rewrite the engine's control database.
-- Descriptor-relative source staging rejects links, special files, oversize or
-  incomplete reads. The engine entry also rejects ambient home authoring scopes.
-- A Linux x86-64 bubblewrap/seccomp experiment encloses the engine, native Codex,
-  model tools and shell test nodes. It supplies private writable repository/state
-  roots, no operator home or credentials, no host network, and a typed model
-  broker. Other architectures and overlapping mount roots fail closed.
-- A supervisor-owned SQLite journal makes source/project/correlation unique,
-  retains exact selection identity, fences dequeue and invocation, and prevents
-  replay or restart from authorizing another invocation.
-- `admission.py` orders a trusted policy's capture, post-queue authority check,
-  repository preparation and invocation. **The production policy implementation
-  and transport integration are not supplied.** Its component tests use fake
-  policy methods and must not be represented as runtime freshness conformance.
+`Runtime(Journal, Profile)` is the trusted policy supplied to `Supervisor` and
+`control.Server`. The server binds only literal IPv4 loopback with a private bearer
+credential. #524 remains the sole ingress; #422 remains the canonical handoff
+producer. There is no task-model or connection-settings change.
 
-`conformance.py` runs the actual patched Archon engine and native Codex CLI with
-synthetic Responses events. It exercises real tools and a subsequent shell test,
-checks a private Git commit, source replacement and write denial, an external
-host canary, namespace/network denial, direct Unix-socket action denial, and the
-absence of a disk engine database. It does not call a live model or publish work.
-The tested native CLI is 0.149.0; this is not a compatibility promise for other
-versions or for the existing deployment's native authentication/configuration.
+The profile pins workflow identity and complete closure revision, worker/native
+provider binaries, OCI image, native settings, authority-reader/supervisor and
+Python dependency contents, plus the complete public authority configuration.
+Operator credentials stay in trusted broker objects; no caller request supplies
+credentials, Docker options, callbacks, endpoints or provider settings.
 
-## Reproduce the limited experiment
+The runtime journals source/project/correlation and the exact immutable selection
+before acknowledgement. Dequeue and invocation each use irreversible revision
+fences. Replay observes the same record; changed reuse conflicts. Interrupted
+owners and uncertain effects cannot be retried automatically. Unknown journal
+schemas are rejected, and upgrades must preserve existing records.
 
-From the repository root with Bun 1.3.11 and dependencies installed:
+After dequeue, the runtime stages the approved capture without links, hardlinks or
+special files and validates its complete executable closure. It calls the Theseus
+adapter's canonical authority reader before base resolution and again at bootstrap
+before Git initialization/fetch. Only successful checks permit the fixed remote's
+current base to be fetched and checked out inside the confined worker. A stale
+bootstrap remains uncertain with a bounded retained rejection diagnostic.
+
+The immutable image runs the actual Archon engine, native Codex, model tools and
+shell test nodes. Linux x86-64 OCI enforcement checks non-root UID, read-only root,
+no network, dropped capabilities, seccomp, no-new-privileges, private namespaces,
+128 PIDs, 1 GiB memory/no additional swap, two CPU quota and finite writable tmpfs
+mounts. The worker has neither Docker/SSH sockets nor operator home/credentials.
+Only individual typed broker sockets are mounted. PID1 and engine control memory
+are protected from same-UID descendants. Engine completion uses a one-shot
+protected descriptor, not a worker-writable result file or HTTP claim.
+
+A detached watchdog expires the pre-recorded container after supervisor death. It
+checks owner label, image and name, deletes the inspected immutable ID, and retries
+bounded individual daemon operations until absence/removal is confirmed. A daemon
+outage retains cleanup ownership; it does not prove the worker has stopped.
+
+## Typed authority
+
+- Model brokerage accepts the pinned model's bounded Responses vocabulary and
+  local tools only. Provider credentials never reach Codex or its descendants.
+  Remote tools, redirects, ambient proxies and arbitrary provider endpoints fail.
+- Git read brokerage permits only bounded upload-pack access to the configured
+  repository and refreshed commit. Worker Git metadata cannot select host Git
+  configuration, helpers, credentials, hooks or a remote destination.
+- Export accepts bounded regular files/deletions with content and executable-mode
+  identity. Publication validates the complete base/result trees and explicit
+  allowed paths, retains the candidate commit before the external write, and
+  creates one new run-specific ref plus a draft PR through fixed GitHub operations.
+  Existing refs cannot be updated. A lost acknowledgement blocks further writes.
+- Publication requires GitHub Actions disabled and a separately established
+  operator profile isolating other automation. The runtime does not disable
+  automation or infer that other deployment triggers are absent.
+- Progress binds task/scope/work-unit/graph/correlation identities and permits
+  implementation progress only. Approval, merge, deployment, secrets management,
+  verification disposition and release readiness have no broker operation.
+
+Unsupported workflows/providers, dynamic closures, ambient authoring scopes,
+plugins/MCP, alternative native configurations and unrestricted outer execution
+are rejected. The older bubblewrap scripts remain historical probes; they do not
+supply the aggregate budgets of the OCI candidate.
+
+## Controlled reproduction
+
+Use a disposable test environment with Bun 1.3.11, Python, Docker, the Theseus
+adapter dependency installed, and the approved native Codex ELF. The tested native
+binary is CLI 0.149.0; its SHA-256 is recorded in test output. Do not copy operator
+homes or credentials into build inputs. The fixed Dockerfile pins its base image.
 
 ```sh
-bun test packages/core/src/operations/confined-workflow.integration.test.ts
-python3 -m unittest scripts.confined_runtime.test_contract -v
-bash scripts/build-confined-worker.sh /absolute/test-artifacts/confined-worker
-python3 -m scripts.confined_runtime.conformance \
-  --worker /absolute/test-artifacts/confined-worker \
-  --node-distribution /absolute/approved/node-distribution
+bash scripts/build-confined-worker.sh /absolute/build-inputs/worker
+# Place the approved native ELF at /absolute/build-inputs/codex.
+cp scripts/confined_runtime/gateway.py scripts/confined_runtime/oci_gateway.py \
+  scripts/confined_runtime/git_gateway.py /absolute/build-inputs/
+docker build --network=none -f scripts/confined_runtime/Dockerfile \
+  -t archon-confined-test /absolute/build-inputs
+# Resolve the immutable image ID; never pass a mutable tag to the runtime.
+docker image inspect --format '{{.Id}}' archon-confined-test
+python -m scripts.confined_runtime.controlled_suite \
+  --image sha256:<resolved-image-id> \
+  --worker /absolute/build-inputs/worker --native /absolute/build-inputs/codex \
+  --output /absolute/new-test-output-directory
 ```
 
-The host test account needs bubblewrap, libseccomp, Git, Python, Node and the
-native Codex executable at `/usr/local/bin/codex`. Its `/usr` and Node mounts
-must contain only approved toolchain inputs, not secrets. Use a disposable
-account and repository. Do not run the probe as a privileged operator account.
+The suite runs component checks, actual engine/native tool and shell confinement,
+engine death/forged completion, typed publication/progress and lost acknowledgement,
+actual upload-pack fetch, supervisor death, and concrete policy composition. The
+composition covers current execution, queued and bootstrap stale scope/guidance,
+unavailable authority, executable-mode tampering and partial broker startup.
+Only model/Theseus/GitHub replies are synthetic; no live writes or model calls occur.
 
-The probe reports `full_runtime_conformance: false` and `live_acceptance: false`.
-Its JSON is debugging evidence, not a Theseus VER report or verification result.
-No VER1426 bindings are added here; #528 already owns its stale-context binding.
+Run the TS entry integration test and `bun run validate` separately. The Theseus
+adapter's PostgreSQL suite checks complete tuple approval and durable claim/recovery,
+including wrong-selection and unknown-format rejection. No new VER1426 scenario
+bindings are added: #528 owns its stale-context binding. Allocation of nominal and
+excluded-action live evidence remains with #533, without duplicate markers.
 
-## Work required before support
+## Operator packaging handoff (#531 / #533)
 
-1. Implement the trusted production policy: integrate bounded source staging,
-   effective configuration validation, Theseus authority retrieval after dequeue,
-   refreshed approved base and private worktree, and immutable execution records.
-   The TS path walk requires a supervisor-owned staged tree with no concurrent
-   writers. It is defense in depth, not a race-safe authoring-directory boundary.
-2. Bind requested and executed closure, worker, native provider, native settings,
-   toolchain and policy identities end to end. Version the adapter's existing
-   three-file digest separately; it is not the Archon capture digest.
-3. Supply authenticated private admission and complete source-scoped inspection,
-   integrated with #524 ingress and #527 recovery. Unknown record versions and
-   interrupted owners must remain blocked across upgrade. No stock API shim.
-4. Implement and test permitted branch push, PR creation and progress brokerage,
-   including hostile Git metadata and repository automation policy. Currently
-   all publication/progress operations are denied. This does not satisfy the
-   full allowed-work case.
-5. Enforce aggregate process, memory, CPU and writable-storage budgets and
-   supervisor/broker lifetime coupling. Bounded output and broker request quotas
-   are not substitutes for those limits. LXC 121's test shell account currently
-   has no delegated writable cgroup control.
-6. Review native settings/guidance/authentication projection against the existing
-   configured installation. The synthetic fixture config is not a replacement
-   for it. Complete adversarial broker schema, upstream protocol and credential
-   tests before allowing any real model credential.
-7. Run the complete contract matrix and independent review against one exact
-   release tuple. Only then may #528's refusal gate be replaced for that tuple.
-   #531 owns operator packaging; #533 owns separately authorized live acceptance.
+Packaging must protect the immutable code, profile, capture, Python environment,
+journal and brokers from the worker and other untrusted writers; provide a private
+Docker daemon/enforcement service and supervised watchdog ownership; bound the
+supervisor's own storage/lifetime; and preserve the journal across restart/upgrade.
+Only a separately reviewed complete release/profile may be placed in the adapter's
+source-controlled registry. Changing any pinned field invalidates that approval.
+Lookup remains available after a gate closes and uses the original durable release.
 
-These source artifacts grant no merge, deployment, secrets administration,
-verification disposition or release-readiness authority.
+This library intentionally supplies no secret-administration or deployment command.
+#531 owns installation and service/credential provisioning. #533 owns separately
+authorized live acceptance against the exact packaged profile. No existing live
+configuration has been replaced, and no verification or readiness disposition is
+implied by the controlled results.

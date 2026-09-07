@@ -8,11 +8,12 @@ from __future__ import annotations
 import http.client
 import http.server
 import json
-from pathlib import Path
+import socket
 import socketserver
 import ssl
 import threading
 import time
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from .gateway import MAX_REQUEST
@@ -29,10 +30,22 @@ class ModelPolicy:
             raise ValueError("invalid_model_policy")
         self.hostname, self.port, self.model = parsed.hostname, parsed.port or 443, model
         self._credential = credential
+        self._deadline = time.monotonic() + 300
+        self._connections = set()
+        self._lock = threading.Lock()
 
     def send(self, body: bytes) -> tuple[int, bytes]:
-        connection = http.client.HTTPSConnection(self.hostname, self.port, timeout=60,
+        deadline = min(self._deadline, time.monotonic() + 60)
+        if deadline <= time.monotonic():
+            raise RuntimeError("model_lifetime_expired")
+        connection = http.client.HTTPSConnection(self.hostname, self.port, timeout=min(15, deadline - time.monotonic()),
                                                 context=ssl.create_default_context())
+        with self._lock:
+            if self._deadline <= time.monotonic():
+                raise RuntimeError("model_lifetime_expired")
+            connection.connect()
+            connection.auto_open = False
+            self._connections.add(connection)
         try:
             connection.request("POST", "/v1/responses", body, {
                 "Content-Type": "application/json", "Authorization": f"Bearer {self._credential}",
@@ -42,12 +55,35 @@ class ModelPolicy:
             # a controlled error rather than forwarding arbitrary headers or text.
             if response.status != 200:
                 return 502, b'{"error":"model_upstream_failed"}'
-            result = response.read(16 * 1024 * 1024 + 1)
-            if len(result) > 16 * 1024 * 1024:
-                return 502, b'{"error":"model_response_too_large"}'
-            return 200, result
+            result = bytearray()
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError("model_lifetime_expired")
+                if connection.sock is not None:
+                    connection.sock.settimeout(min(15, remaining))
+                chunk = response.read1(min(65536, 16 * 1024 * 1024 + 1 - len(result)))
+                if not chunk:
+                    break
+                result.extend(chunk)
+                if len(result) > 16 * 1024 * 1024:
+                    return 502, b'{"error":"model_response_too_large"}'
+            return 200, bytes(result)
         finally:
             connection.close()
+            with self._lock:
+                self._connections.discard(connection)
+
+    def close(self):
+        with self._lock:
+            self._deadline = 0
+            for connection in self._connections:
+                if connection.sock is not None:
+                    try:
+                        connection.sock.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        pass
+                connection.close()
 
 
 def validate_body(body: bytes, model: str) -> bytes:
@@ -64,7 +100,7 @@ def validate_body(body: bytes, model: str) -> bytes:
     if not isinstance(value, dict) or value.get("model") != model or value.get("stream") is not True:
         raise ValueError("model_request_denied")
     allowed = {"model", "stream", "store", "input", "instructions", "tools", "tool_choice",
-               "parallel_tool_calls", "reasoning", "include", "prompt_cache_key", "client_metadata"}
+               "parallel_tool_calls", "reasoning", "include", "prompt_cache_key", "client_metadata", "max_output_tokens"}
     if value.keys() - allowed:
         raise ValueError("unknown_model_fields")
     # Server-side tools could introduce external effects beyond model inference.
@@ -89,6 +125,7 @@ def validate_body(body: bytes, model: str) -> bytes:
     if value.get("store", False) is not False:
         raise ValueError("model_storage_denied")
     value["store"] = False
+    value["max_output_tokens"] = 8192  # fixed per-request cost authority, 64 requests per invocation
     items = value.get("input", [])
     if not isinstance(items, list):
         raise ValueError("model_input_denied")
@@ -147,10 +184,22 @@ class Broker(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
             raise
 
     def process_request_thread(self, request, client_address):
+        def expire():
+            try:
+                request.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+        timer = threading.Timer(min(120, max(.001, self._deadline - time.monotonic())), expire)
+        timer.daemon = True
+        timer.start()
         try:
             super().process_request_thread(request, client_address)
         finally:
+            timer.cancel()
             self._slots.release()
+
+    def handle_error(self, request, client_address):
+        pass
 
     def consume(self):
         with self._quota_lock:
@@ -186,12 +235,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if len(body) != length:
                 raise ValueError("model_request_truncated")
             body = validate_body(body, self.server.policy.model)
-        except (ValueError, UnicodeError, OSError):
+        except (ValueError, TypeError, UnicodeError, OSError):
             self.send_error(400)
             return
         try:
             status, result = self.server.policy.send(body)
-        except (OSError, http.client.HTTPException):
+        except (OSError, RuntimeError, http.client.HTTPException):
             status, result = 502, b'{"error":"model_upstream_failed"}'
         self.send_response(status)
         self.send_header("Content-Type", "text/event-stream" if status == 200 else "application/json")
