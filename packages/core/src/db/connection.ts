@@ -6,6 +6,7 @@
  * - Otherwise: Use SQLite at ~/.archon/archon.db (standalone CLI)
  */
 import { join } from 'path';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { getArchonHome } from '@archon/paths';
 import type { DbNotificationListener, IDatabase, SqlDialect, QueryResult } from './adapters/types';
 import { PostgresAdapter, postgresDialect } from './adapters/postgres';
@@ -23,6 +24,15 @@ function getLog(): ReturnType<typeof createLogger> {
 // Singleton database instance
 let database: IDatabase | null = null;
 let dialect: SqlDialect | null = null;
+const scopedDatabase = new AsyncLocalStorage<IDatabase>();
+
+/** Bind an explicit database to one engine invocation, including its async work.
+ * Confined workers use an in-memory database so generated subprocesses cannot
+ * rewrite engine control state through a shared SQLite file.
+ */
+export function withDatabase<T>(db: IDatabase, operation: () => T): T {
+  return scopedDatabase.run(db, operation);
+}
 
 /**
  * Where the SQLite registry lives when DATABASE_URL is unset.
@@ -42,6 +52,8 @@ export function getSqliteDbPath(): string {
  * Auto-detects PostgreSQL vs SQLite based on DATABASE_URL
  */
 export function getDatabase(): IDatabase {
+  const scoped = scopedDatabase.getStore();
+  if (scoped) return scoped;
   if (database) {
     return database;
   }
@@ -76,6 +88,8 @@ export function getDatabase(): IDatabase {
  * Get the SQL dialect for the current database
  */
 export function getDialect(): SqlDialect {
+  const scoped = scopedDatabase.getStore();
+  if (scoped) return scoped.sql;
   if (!dialect) {
     // Initialize database to set dialect
     getDatabase();
