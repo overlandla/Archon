@@ -15,7 +15,7 @@ from unittest.mock import patch
 from .admission import Release
 from .cleanup_service import ready, sweep
 from .journal import Journal
-from .oci import create_arguments
+from .oci import create_arguments, tmpfs
 from .runtime import NATIVE_CONFIG, Profile
 from .service import (
     compose,
@@ -85,6 +85,20 @@ class ServiceTests(unittest.TestCase):
             with patch('scripts.confined_runtime.oci.DOCKER_CONFIG', root):
                 with self.assertRaisesRegex(ValueError, 'unsupported_docker_client_configuration'):
                     create_arguments(None, 'unreachable')
+
+    def test_nested_container_mounts_preserve_private_host_staging(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory) / 'private' / 'work'
+            parent.mkdir(parents=True, mode=0o700)
+            state = parent / 'state'
+            capture = state / 'workspaces/_cwd/repository/artifacts/runs/run/workflow-source'
+            mounts = tmpfs(state, capture)
+            for ancestor in state.parents:
+                if ancestor.is_relative_to('/tmp') and ancestor != Path('/tmp'):
+                    options = set(mounts[str(ancestor)].split(','))
+                    self.assertTrue({'mode=0555', 'uid=0', 'gid=0', 'size=1m'} <= options)
+            self.assertEqual(parent.stat().st_mode & 0o777, 0o700)
+            self.assertNotIn(str(state), mounts)  # immutable state stays a read-only bind
 
     def test_state_refuses_unbounded_filesystem_before_journal_open(self):
         with patch('scripts.confined_runtime.service.protected'), patch('scripts.confined_runtime.service.os.statvfs') as filesystem:
@@ -221,7 +235,7 @@ class UnitGraphTests(unittest.TestCase):
                     names.append(source.name)
             for target in ('sysinit', 'basic', 'shutdown', 'sockets', 'timers', 'paths', 'network-online', 'multi-user', 'local-fs', 'umount'):
                 (units / (target + '.target')).write_text('[Unit]\nDescription=Verification fixture\nDefaultDependencies=no\n')
-            for binary in ('opt/archon-confined/release/venv/bin/python', 'usr/bin/dockerd', 'usr/bin/systemd-tmpfiles'):
+            for binary in ('opt/archon-confined/release/venv/bin/python', 'usr/bin/dockerd', 'usr/bin/containerd', 'usr/bin/systemd-tmpfiles'):
                 destination = root / binary
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile('/usr/bin/true', destination)

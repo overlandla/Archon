@@ -30,7 +30,7 @@ namespace isolation and kernel remain independent operator-review inputs.
 
 This LXC has `/dev/fuse` but no loop devices. For controlled tests, bounded sparse
 ext4 images mounted through `fuse2fs -o rw,allow_other` provide 1 GiB journal and
-16 GiB daemon filesystems. With `fuse2fs` installed and the `archon-confined` user created,
+16 GiB daemon filesystems. With `fuse2fs` and `fuse-overlayfs` installed and the `archon-confined` user created,
 `venv/bin/python -B -m scripts.confined_runtime.lxc_storage_conformance` provisions
 fresh volumes and refuses existing targets. Place their root-only backing files under
 `/var/lib/archon-conformance`. Never format a host block device. Use persistent
@@ -44,7 +44,13 @@ claim that every LXC storage configuration is supported.
 
 Import the retained image into the dedicated socket. The fixture currently pins
 its worker image in `installed_conformance.py`; changing it requires rebuilding
-the selection and collecting fresh evidence. The Docker client always uses the
+the selection and collecting fresh evidence. The dedicated Docker service explicitly depends on a separate containerd unit
+with a private socket and bounded storage root. It uses the explicit `fuse-overlayfs` storage driver;
+FUSE does not provide the directory-entry type support required by this host’s
+overlayfs/erofs plugins. Check the actual `docker info` containerd address and
+storage driver, including after reboot. An earlier candidate silently selected
+the host’s shared containerd and its installed storage evidence was invalidated.
+The Docker client always uses the
 versioned empty `packaging/docker-client/config.json`, ignoring ambient client
 proxy configuration.
 
@@ -78,9 +84,10 @@ WantedBy=multi-user.target
 ```
 
 Install that unit as `archon-conformance-fixtures.service`. Start it, the private
-daemon, cleanup and admission units. Then run each check separately:
+containerd, daemon, cleanup and admission units. Then run each check separately:
 
 ```sh
+venv/bin/python -B -m scripts.confined_runtime.installed_checks_conformance enforcement
 venv/bin/python -B -m scripts.confined_runtime.installed_checks_conformance nominal
 venv/bin/python -B -m scripts.confined_runtime.installed_checks_conformance basic
 venv/bin/python -B -m scripts.confined_runtime.installed_checks_conformance configuration
@@ -95,7 +102,7 @@ venv/bin/python -B -m scripts.confined_runtime.installed_checks_conformance rebo
 Storage checks fill only explicitly named test files on the three bounded
 filesystems and remove those files in `finally`. Filling the 16 GiB FUSE volume
 can take several minutes and allocates backing space on the parent filesystem.
-Reserve that capacity first. Crash checks kill the admission and cleanup main
+Reserve that capacity first. Crash checks kill the admission, cleanup and private containerd main
 processes, pause only the private daemon across the recorded worker expiry, then
 resume it and require exact-container cleanup without reinvocation. Do not rerun
 with a new correlation to recover a lost acknowledgement. Nominal and crash

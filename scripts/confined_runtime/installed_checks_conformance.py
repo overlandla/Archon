@@ -89,6 +89,14 @@ class Checks:
             time.sleep(2)
         raise RuntimeError('run_did_not_terminate')
 
+    def enforcement(self):
+        self.wait_ready()
+        info = json.loads(subprocess.check_output([*DOCKER, 'info', '--format', '{{json .}}']))
+        assert info['Containerd']['Address'] == '/run/archon-confined-containerd/containerd.sock'
+        assert info['Driver'] == 'fuse-overlayfs'
+        assert info['DockerRootDir'] == '/var/lib/archon-confined-docker'
+        self.record('explicit-private-containerd-and-bounded-fuse-storage')
+
     def nominal(self):
         self.wait_ready()
         self.fixture('reset')
@@ -188,6 +196,12 @@ class Checks:
         self.wait_ready()
         assert self.inspect(row['run_id'])['state'] == 'invoking'
         self.record('independent-cleanup-sigkill-recovery')
+        run('systemctl', 'kill', '--kill-whom=main', '--signal=SIGKILL', 'archon-confined-containerd.service')
+        run('systemctl', 'start', 'archon-confined-containerd.service', 'archon-confined-docker.service', 'archon-confined.service')
+        self.wait_ready()
+        assert self.inspect(row['run_id'])['state'] == 'invoking'
+        self.enforcement()
+        self.record('private-containerd-recovery-without-reinvocation')
         # Freeze only the dedicated daemon across expiry. The original daemon and
         # SSH remain available. Always resume even if an assertion fails.
         run('systemctl', 'kill', '--kill-whom=main', '--signal=SIGSTOP', 'archon-confined-docker.service')
@@ -303,9 +317,10 @@ finally: os.close(fd)
                       ('confined_admissions', 'confined_transitions', 'confined_run_facts', 'confined_effects', 'confined_effect_candidates')}
         (ROOT / 'before-reboot.json').write_text(json.dumps(before))
         enabled = subprocess.run(['systemctl', 'is-enabled', '--quiet', 'archon.service']).returncode == 0
-        (ROOT / 'stock-was-enabled').write_text(str(enabled))
+        if not (ROOT / 'stock-was-enabled').exists():
+            (ROOT / 'stock-was-enabled').write_text(str(enabled))
         run('systemctl', 'disable', 'archon.service')
-        run('systemctl', 'enable', 'archon-confined.service', 'archon-confined-cleanup.service', 'archon-confined-docker.service', 'archon-conformance-fixtures.service')
+        run('systemctl', 'enable', 'archon-confined.service', 'archon-confined-cleanup.service', 'archon-confined-docker.service', 'archon-confined-containerd.service', 'archon-conformance-fixtures.service')
         self.record('reboot-checkpoint-retained')
 
     def reboot_check(self):
@@ -321,7 +336,7 @@ finally: os.close(fd)
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode', choices=('nominal', 'basic', 'crash', 'storage', 'configuration', 'reboot_prepare', 'reboot_check'))
+    parser.add_argument('mode', choices=('enforcement', 'nominal', 'basic', 'crash', 'storage', 'configuration', 'reboot_prepare', 'reboot_check'))
     args = parser.parse_args()
     if os.geteuid() != 0:
         raise SystemExit('test_host_root_required')

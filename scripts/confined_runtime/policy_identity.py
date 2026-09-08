@@ -25,7 +25,7 @@ def revision() -> str:
     # Service enforcement is part of the reviewed policy, not an unbound
     # installation hint. Installed unit copies must be checked against these.
     for path in sorted((package / "packaging").rglob("*")):
-        if path.suffix in {".service", ".slice", ".mount", ".conf", ".json"}:
+        if path.suffix in {".service", ".slice", ".mount", ".conf", ".json", ".toml"}:
             digest.update(("packaging/" + path.relative_to(package / "packaging").as_posix()).encode() + b"\0")
             digest.update(hashlib.sha256(path.read_bytes()).hexdigest().encode() + b"\n")
     # Pin the actual interpreter/standard library and installed distributions,

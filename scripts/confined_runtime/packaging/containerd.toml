@@ -1,0 +1,12 @@
+version = 3
+root = '/var/lib/archon-confined-docker/private-containerd'
+state = '/run/archon-confined-containerd'
+imports = []
+disabled_plugins = ['io.containerd.grpc.v1.cri', 'io.containerd.cri.v1.images', 'io.containerd.cri.v1.runtime', 'io.containerd.snapshotter.v1.overlayfs', 'io.containerd.snapshotter.v1.erofs']
+required_plugins = ['io.containerd.snapshotter.v1.native', 'io.containerd.metadata.v1.bolt']
+
+[grpc]
+address = '/run/archon-confined-containerd/containerd.sock'
+
+[plugins.'io.containerd.nri.v1.nri']
+disable = true

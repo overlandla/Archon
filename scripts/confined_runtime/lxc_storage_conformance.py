@@ -21,7 +21,7 @@ for name, size, target in [('journal','1G','/var/lib/archon-confined'),('docker'
 Description=Disposable Archon {name} filesystem
 DefaultDependencies=no
 After=local-fs-pre.target
-Before=local-fs.target archon-confined-docker.service archon-confined-cleanup.service archon-confined.service
+Before=local-fs.target archon-confined-containerd.service archon-confined-docker.service archon-confined-cleanup.service archon-confined.service
 Conflicts=umount.target
 Before=umount.target
 

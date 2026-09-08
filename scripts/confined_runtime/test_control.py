@@ -1,11 +1,13 @@
 import http.client
 import json
+import sqlite3
 import tempfile
 import threading
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest.mock import patch
 
 from .admission import Release, Supervisor
 from .control import Server
@@ -77,6 +79,30 @@ class ControlTests(unittest.TestCase):
         self.assertEqual(record["execution"]["engine"], {"outcome": "completed"})
         self.assertEqual(record["effects"], [])
         self.assertEqual(self.request("/v1/admissions", dict(body, selection={**self.selection, "changed": True}))[0], 409)
+
+    def test_queue_read_recovers_after_storage_fault_without_duplicate_invocation(self):
+        recovered, observed = threading.Event(), threading.Event()
+        connect = self.journal.connect
+        def fault():
+            if threading.current_thread() is self.server.worker and not recovered.is_set():
+                observed.set()
+                raise sqlite3.OperationalError('synthetic full journal')
+            return connect()
+        with patch.object(self.journal, 'connect', side_effect=fault):
+            self.server.changed.set()
+            self.assertTrue(observed.wait(2))
+            body = {'source': self.server.source, 'correlation_id': 'storage-recovery', 'selection': self.selection}
+            status, admitted = self.request('/v1/admissions', body)
+            self.assertEqual(status, 202)
+            self.assertEqual(admitted['state'], 'admitted')
+            self.assertEqual(self.calls, [])
+            self.assertTrue(self.server.worker.is_alive())
+            recovered.set()
+            self.server.changed.set()
+            completed = self.wait_finished('storage-recovery')
+            self.assertEqual(completed['run_id'], admitted['run_id'])
+            self.assertEqual(self.request('/v1/admissions', body)[1], completed)
+            self.assertEqual(self.calls, ['capture', 'authority', 'repository', 'invoke'])
 
     def test_unknown_release_is_inspectably_rejected_and_foreign_source_cannot_launch(self):
         body = {"source": self.server.source, "correlation_id": "unsupported", "selection": {**self.selection, "release": {}}}

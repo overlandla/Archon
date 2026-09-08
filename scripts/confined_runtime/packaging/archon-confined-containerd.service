@@ -1,0 +1,24 @@
+[Unit]
+Description=Private containerd for Archon confined workers
+RequiresMountsFor=/var/lib/archon-confined-docker
+AssertPathIsMountPoint=/var/lib/archon-confined-docker
+Before=archon-confined-docker.service
+
+[Service]
+Type=notify
+RuntimeDirectory=archon-confined-containerd
+RuntimeDirectoryMode=0700
+UMask=0077
+ExecStart=/usr/bin/containerd --config /opt/archon-confined/release/scripts/confined_runtime/packaging/containerd.toml
+Delegate=yes
+KillMode=process
+TimeoutStartSec=120
+TimeoutStopSec=120
+Restart=on-failure
+RestartSec=5
+LimitCORE=0
+MemoryMax=2G
+TasksMax=512
+
+[Install]
+WantedBy=multi-user.target

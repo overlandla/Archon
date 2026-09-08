@@ -25,7 +25,7 @@ from uuid import uuid4
 
 ROOT = Path('/var/lib/archon-conformance')
 RELEASE = Path('/opt/archon-confined/release')
-IMAGE = 'sha256:986a52e175efb09f17f64296f1010e1fc6a7a9853c8b10e6f9d24df2bb7d4c9a'
+IMAGE = 'sha256:1b6a4c7356815e450b1bf36a175cc071d3c076b294028727de8cf6e25eef6c78'
 NAMES = ('theseus.example.test', 'model.example.test', 'api.github.com', 'github.com')
 
 
@@ -262,10 +262,10 @@ def restore():
     before_bundle = (ROOT / 'certifi.before').read_bytes()
     if hosts.read_bytes() != original + added or ca.read_bytes() != certificate or bundle.read_bytes() != before_bundle + b'\n' + certificate:
         raise RuntimeError('network_inputs_changed_preserve_for_operator')
-    for unit in ('archon-confined-cleanup.service', 'archon-confined-docker.service', 'archon-conformance-fixtures.service'):
+    for unit in ('archon-confined-cleanup.service', 'archon-confined-docker.service', 'archon-confined-containerd.service', 'archon-conformance-fixtures.service'):
         command('systemctl', 'stop', unit)
     command('systemctl', 'disable', 'archon-confined.service', 'archon-confined-cleanup.service',
-            'archon-confined-docker.service', 'archon-conformance-fixtures.service')
+            'archon-confined-docker.service', 'archon-confined-containerd.service', 'archon-conformance-fixtures.service')
     hosts.write_bytes(original)
     ca.unlink()
     command('update-ca-certificates', stdout=subprocess.DEVNULL)

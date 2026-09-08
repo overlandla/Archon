@@ -13,7 +13,8 @@ installed-service harness, its temporary host changes and restoration procedure.
 ## Exact supported candidate topology
 
 The candidate requires Linux x86-64, systemd with `LoadCredential`, cgroup v2,
-Docker with the systemd cgroup driver, and a root-owned dedicated Python 3.13+
+Docker with the systemd cgroup driver, containerd 2 with version-3 configuration,
+`fuse-overlayfs`, and a root-owned dedicated Python 3.13+
 environment containing the pinned Theseus adapter and all dependencies. Record
 the exact OS, kernel, systemd, Docker/containerd/runc, Python, TLS trust-store and
 native library identities in the operator review. These are host enforcement
@@ -26,7 +27,14 @@ is no generic executable, import, callback, credential-path or Docker override
 in the profile. Existing Archon connection settings remain separate.
 
 `archon-confined-docker.service` owns a separate Unix socket, data directory,
-exec directory and containerd instance. It has no TCP listener or network bridge.
+exec directory and explicitly selected `archon-confined-containerd.service`.
+That service owns `/run/archon-confined-containerd/containerd.sock` and stores
+content under the same bounded daemon filesystem. Docker must never discover or
+reuse `/run/containerd/containerd.sock`. The fixed `fuse-overlayfs` storage driver supports
+the candidate FUSE filesystem; overlayfs and erofs plugins are disabled there.
+Containerd configuration imports, CRI and NRI are disabled. Docker’s
+[containerd storage documentation](https://docs.docker.com/engine/storage/containerd/)
+explains why setting Docker’s data root alone does not bound containerd storage. It has no TCP listener or network bridge.
 The two trusted runtime units see its socket at `/run/docker.sock` through a
 read-only bind; they must never join the host's general `docker` group. Access
 to this dedicated daemon remains powerful trusted supervisor authority. It is
@@ -74,7 +82,9 @@ daemon volume budget.
 
 Staging is deliberately shared with the daemon's host namespace. `PrivateTmp=yes`
 on the admission unit would break Docker source mounts. The supplied mount and
-root-owned parent keep the bounded staging path fixed. Do not clean staging while
+root-owned parent keep the bounded staging path fixed. Container-only root-owned
+traversable tmpfs ancestors prevent graph-driver mount creation from inheriting
+the host staging directory’s private mode; host permissions stay private. Do not clean staging while
 any container may still reference it. On a drained upgrade, remove only retained
 run-specific temporary directories after confirming all associated containers
 are absent. Reboot clears staging; durable admissions still prevent reinvocation.
@@ -100,7 +110,7 @@ are absent. Reboot clears staging; durable admissions still prevent reinvocation
 4. Produce the complete release tuple using `Release`, closure inspection,
    `policy_identity.revision()`, the native configuration digest and
    `Profile.configuration_revision()` from that final environment. The policy
-   digest includes the packaged unit, mount, slice and daemon configuration files.
+   digest includes the packaged unit, mount, slice, daemon JSON and containerd TOML configuration files.
    Preserve all eight release identity fields; never approve only the image or
    binary. Changing packaging invalidates previous policy evidence.
 5. Prepare `profile.json` using the structure below and synthetic credentials for

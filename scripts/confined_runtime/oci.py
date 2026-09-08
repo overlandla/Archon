@@ -22,7 +22,13 @@ ENV = {"PATH": "/usr/local/bin:/usr/bin:/bin"}
 MEMORY = 1024 * 1024 * 1024
 def tmpfs(state: Path, capture: Path):
     project = capture.parents[3]
+    # Legacy Docker graph drivers preserve private host ancestor modes when
+    # creating nested mount targets. Supply root-owned, traversable container-only
+    # ancestors; never make the supervisor's host staging directories public.
+    ancestors = {str(parent): "rw,nosuid,nodev,size=1m,mode=0555,uid=0,gid=0"
+                 for parent in state.parents if parent.is_relative_to('/tmp') and parent != Path('/tmp')}
     return {
+        **ancestors,
         "/workspace": "rw,nosuid,nodev,size=512m,mode=0700,uid=65532,gid=65532",
         str(capture.parent): "rw,nosuid,nodev,size=128m,mode=0700,uid=65532,gid=65532",
         str(project / "state"): "rw,nosuid,nodev,size=32m,mode=0700,uid=65532,gid=65532",
