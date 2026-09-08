@@ -63,17 +63,17 @@ class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
     def dequeue(self):
         while not self.stopped.is_set():
             self.changed.clear()
-            with self.supervisor.journal.connect() as connection:
-                row = connection.execute("SELECT run_id, revision FROM confined_admissions WHERE deployment=? AND project=? AND state='admitted' ORDER BY rowid LIMIT 1",
-                                         (self.source["deployment"], self.source["project"])).fetchone()
-            if row is None:
-                self.changed.wait(1)
-                continue
             try:
+                with self.supervisor.journal.connect() as connection:
+                    row = connection.execute("SELECT run_id, revision FROM confined_admissions WHERE deployment=? AND project=? AND state='admitted' ORDER BY rowid LIMIT 1",
+                                             (self.source["deployment"], self.source["project"])).fetchone()
+                if row is None:
+                    self.changed.wait(1)
+                    continue
                 self.supervisor.dequeue(row["run_id"], row["revision"])
             except Exception:
-                # A competing owner, cleanup failure or DB failure grants no
-                # retry authority. Checking/invoking rows are never selected.
+                # A failed queue read must not kill the worker after journal
+                # exhaustion. Retrying selection grants no invocation retry authority. Checking/invoking rows are never selected.
                 self.changed.wait(1)
 
     def server_close(self):

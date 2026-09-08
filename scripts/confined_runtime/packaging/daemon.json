@@ -13,5 +13,19 @@
   "log-driver": "none",
   "exec-opts": ["native.cgroupdriver=systemd"],
   "cgroup-parent": "archon-confined-workers.slice",
-  "default-ulimits": { "core": { "Name": "core", "Hard": 0, "Soft": 0 } }
+  "default-ulimits": {
+    "core": {
+      "Name": "core",
+      "Hard": 0,
+      "Soft": 0
+    }
+  },
+  "containerd": "/run/archon-confined-containerd/containerd.sock",
+  "containerd-namespace": "archon-confined",
+  "containerd-plugins-namespace": "archon-confined-plugins",
+  "storage-driver": "fuse-overlayfs",
+  "features": {
+    "containerd-snapshotter": false,
+    "cdi": false
+  }
 }

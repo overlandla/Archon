@@ -16,12 +16,19 @@ from .linux import WorkerExit
 from .watchdog import OWNER_LABEL
 from .watchdog import start as start_watchdog
 
-DOCKER = ["docker", "--host", "unix:///var/run/docker.sock"]
+DOCKER_CONFIG = Path(__file__).resolve().parent / "packaging/docker-client"
+DOCKER = ["/usr/bin/docker", "--config", str(DOCKER_CONFIG), "--host", "unix:///var/run/docker.sock"]
 ENV = {"PATH": "/usr/local/bin:/usr/bin:/bin"}
 MEMORY = 1024 * 1024 * 1024
 def tmpfs(state: Path, capture: Path):
     project = capture.parents[3]
+    # Legacy Docker graph drivers preserve private host ancestor modes when
+    # creating nested mount targets. Supply root-owned, traversable container-only
+    # ancestors; never make the supervisor's host staging directories public.
+    ancestors = {str(parent): "rw,nosuid,nodev,size=1m,mode=0555,uid=0,gid=0"
+                 for parent in state.parents if parent.is_relative_to('/tmp') and parent != Path('/tmp')}
     return {
+        **ancestors,
         "/workspace": "rw,nosuid,nodev,size=512m,mode=0700,uid=65532,gid=65532",
         str(capture.parent): "rw,nosuid,nodev,size=128m,mode=0700,uid=65532,gid=65532",
         str(project / "state"): "rw,nosuid,nodev,size=32m,mode=0700,uid=65532,gid=65532",
@@ -77,6 +84,8 @@ class Inputs:
 
 
 def create_arguments(inputs: Inputs, name: str) -> list[str]:
+    if json.loads((DOCKER_CONFIG / "config.json").read_bytes()) != {}:
+        raise ValueError("unsupported_docker_client_configuration")
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", inputs.image):
         raise ValueError("oci_image_must_be_immutable")
     for path in [*inputs.mounts().values(), inputs.seccomp, inputs.state]:

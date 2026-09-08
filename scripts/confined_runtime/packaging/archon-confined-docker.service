@@ -3,8 +3,9 @@ RequiresMountsFor=/var/lib/archon-confined /var/lib/archon-confined-docker
 AssertPathIsMountPoint=/var/lib/archon-confined
 AssertPathIsMountPoint=/var/lib/archon-confined-docker
 Description=Dedicated Docker enforcement service for Archon confined workers
-Requires=archon-confined-workers.slice tmp-archon\x2dconfined\x2druntime.mount
-After=network-online.target archon-confined-workers.slice tmp-archon\x2dconfined\x2druntime.mount
+Requires=archon-confined-containerd.service archon-confined-workers.slice tmp-archon\x2dconfined\x2druntime.mount
+BindsTo=archon-confined-containerd.service
+After=archon-confined-containerd.service network-online.target archon-confined-workers.slice tmp-archon\x2dconfined\x2druntime.mount
 Wants=archon-confined-cleanup.service
 Before=archon-confined-cleanup.service archon-confined.service
 
