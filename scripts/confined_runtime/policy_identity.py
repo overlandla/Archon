@@ -22,6 +22,12 @@ def revision() -> str:
                 raise ValueError("policy_module_too_large")
             digest.update((prefix + "/" + path.relative_to(root).as_posix()).encode() + b"\0")
             digest.update(hashlib.sha256(content).hexdigest().encode() + b"\n")
+    # Service enforcement is part of the reviewed policy, not an unbound
+    # installation hint. Installed unit copies must be checked against these.
+    for path in sorted((package / "packaging").iterdir()):
+        if path.suffix in {".service", ".slice", ".mount", ".conf", ".json"}:
+            digest.update(("packaging/" + path.name).encode() + b"\0")
+            digest.update(hashlib.sha256(path.read_bytes()).hexdigest().encode() + b"\n")
     # Pin the actual interpreter/standard library and installed distributions,
     # including optional format validators that change JSON-schema behavior.
     # This intentionally requires the tested dedicated supervisor environment.

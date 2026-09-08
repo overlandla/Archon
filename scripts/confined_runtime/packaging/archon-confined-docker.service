@@ -1,0 +1,29 @@
+[Unit]
+RequiresMountsFor=/var/lib/archon-confined /var/lib/archon-confined-docker
+AssertPathIsMountPoint=/var/lib/archon-confined
+AssertPathIsMountPoint=/var/lib/archon-confined-docker
+Description=Dedicated Docker enforcement service for Archon confined workers
+Requires=archon-confined-workers.slice tmp-archon\x2dconfined\x2druntime.mount
+After=network-online.target archon-confined-workers.slice tmp-archon\x2dconfined\x2druntime.mount
+Wants=archon-confined-cleanup.service
+Before=archon-confined-cleanup.service archon-confined.service
+
+[Service]
+Type=notify
+RuntimeDirectory=archon-confined-docker
+RuntimeDirectoryMode=0710
+Group=archon-confined
+ExecStartPre=/usr/bin/systemd-tmpfiles --create /opt/archon-confined/release/scripts/confined_runtime/packaging/archon-confined-tmpfiles.conf
+ExecStart=/usr/bin/dockerd --config-file=/opt/archon-confined/release/scripts/confined_runtime/packaging/daemon.json
+Delegate=yes
+KillMode=process
+TimeoutStartSec=120
+TimeoutStopSec=120
+Restart=on-failure
+RestartSec=5
+LimitCORE=0
+MemoryMax=2G
+TasksMax=512
+
+[Install]
+WantedBy=multi-user.target

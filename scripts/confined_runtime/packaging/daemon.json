@@ -1,0 +1,17 @@
+{
+  "hosts": ["unix:///run/archon-confined-docker/docker.sock"],
+  "group": "archon-confined",
+  "data-root": "/var/lib/archon-confined-docker",
+  "exec-root": "/run/archon-confined-docker/exec",
+  "pidfile": "/run/archon-confined-docker/docker.pid",
+  "bridge": "none",
+  "iptables": false,
+  "ip6tables": false,
+  "ip-forward": false,
+  "ip-masq": false,
+  "live-restore": false,
+  "log-driver": "none",
+  "exec-opts": ["native.cgroupdriver=systemd"],
+  "cgroup-parent": "archon-confined-workers.slice",
+  "default-ulimits": { "core": { "Name": "core", "Hard": 0, "Soft": 0 } }
+}

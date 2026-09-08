@@ -1,0 +1,57 @@
+[Unit]
+RequiresMountsFor=/var/lib/archon-confined /var/lib/archon-confined-docker
+AssertPathIsMountPoint=/var/lib/archon-confined
+AssertPathIsMountPoint=/var/lib/archon-confined-docker
+Description=Archon confined handoff admission and trusted brokers
+Requires=archon-confined-docker.service archon-confined-cleanup.service tmp-archon\x2dconfined\x2druntime.mount
+BindsTo=archon-confined-cleanup.service archon-confined-docker.service
+After=network-online.target archon-confined-docker.service archon-confined-cleanup.service tmp-archon\x2dconfined\x2druntime.mount
+
+[Service]
+Type=exec
+User=archon-confined
+Group=archon-confined
+UMask=0077
+WorkingDirectory=/opt/archon-confined/release
+ExecStart=/opt/archon-confined/release/venv/bin/python -I -B /opt/archon-confined/release/scripts/confined_runtime/packaging/entry.py serve
+LoadCredential=ingress:/etc/archon-confined/credentials/ingress
+LoadCredential=theseus:/etc/archon-confined/credentials/theseus
+LoadCredential=github:/etc/archon-confined/credentials/github
+LoadCredential=model:/etc/archon-confined/credentials/model
+Environment=TMPDIR=/tmp/archon-confined-runtime/work
+StateDirectory=archon-confined
+StateDirectoryMode=0700
+BindReadOnlyPaths=/run/archon-confined-docker/docker.sock:/run/docker.sock
+ReadWritePaths=/var/lib/archon-confined /tmp/archon-confined-runtime/work
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=no
+PrivateDevices=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+LimitCORE=0
+LimitNOFILE=1024
+MemoryMax=1G
+MemorySwapMax=0
+TasksMax=128
+CPUQuota=200%
+KillMode=control-group
+TimeoutStopSec=45
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+LogRateLimitIntervalSec=60
+LogRateLimitBurst=10
+
+[Install]
+WantedBy=multi-user.target
