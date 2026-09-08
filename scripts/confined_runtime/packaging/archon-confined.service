@@ -13,7 +13,7 @@ User=archon-confined
 Group=archon-confined
 UMask=0077
 WorkingDirectory=/opt/archon-confined/release
-ExecStart=/opt/archon-confined/release/venv/bin/python -I -B /opt/archon-confined/release/scripts/confined_runtime/packaging/entry.py serve
+ExecStart=/opt/archon-confined/release/venv/bin/python -I -S -B -X pycache_prefix=/dev/null /opt/archon-confined/release/scripts/confined_runtime/packaging/entry.py serve
 LoadCredential=ingress:/etc/archon-confined/credentials/ingress
 LoadCredential=theseus:/etc/archon-confined/credentials/theseus
 LoadCredential=github:/etc/archon-confined/credentials/github

@@ -17,7 +17,7 @@ User=archon-confined
 Group=archon-confined
 UMask=0077
 WorkingDirectory=/opt/archon-confined/release
-ExecStart=/opt/archon-confined/release/venv/bin/python -I -B /opt/archon-confined/release/scripts/confined_runtime/packaging/entry.py cleanup
+ExecStart=/opt/archon-confined/release/venv/bin/python -I -S -B -X pycache_prefix=/dev/null /opt/archon-confined/release/scripts/confined_runtime/packaging/entry.py cleanup
 StateDirectory=archon-confined
 StateDirectoryMode=0700
 BindReadOnlyPaths=/run/archon-confined-docker/docker.sock:/run/docker.sock

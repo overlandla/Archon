@@ -25,7 +25,8 @@ def start(name: str, lifetime: float, image: str):
     if (not re.fullmatch(r"archon-confined-[0-9a-f-]{36}", name) or not 0 < lifetime <= 900
             or not re.fullmatch(r"sha256:[0-9a-f]{64}", image)):
         raise ValueError("invalid_watchdog_identity")
-    process = subprocess.Popen([sys.executable, "-I", str(Path(__file__).resolve()), name, str(lifetime), image],
+    process = subprocess.Popen([sys.executable, "-I", "-S", "-B", "-X", "pycache_prefix=/dev/null",
+        str(Path(__file__).parent / "packaging/entry.py"), "watchdog", name, str(lifetime), image],
         env=ENV, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
         start_new_session=True, close_fds=True)
     try:
