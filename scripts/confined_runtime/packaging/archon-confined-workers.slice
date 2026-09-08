@@ -1,0 +1,8 @@
+[Unit]
+Description=Aggregate budgets for Archon confined OCI workers
+
+[Slice]
+MemoryMax=2G
+MemorySwapMax=0
+TasksMax=256
+CPUQuota=400%

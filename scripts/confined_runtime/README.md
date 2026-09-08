@@ -119,6 +119,10 @@ Only a separately reviewed complete release/profile may be placed in the adapter
 source-controlled registry. Changing any pinned field invalidates that approval.
 Lookup remains available after a gate closes and uses the original durable release.
 
+The [packaging candidate](packaging/README.md) now supplies a strict service entry,
+separate durable cleanup unit, dedicated daemon configuration and bounded staging.
+It has not been installed or approved as an operator profile.
+
 This library intentionally supplies no secret-administration or deployment command.
 #531 owns installation and service/credential provisioning. #533 owns separately
 authorized live acceptance against the exact packaged profile. No existing live
