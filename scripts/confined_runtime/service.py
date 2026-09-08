@@ -63,6 +63,10 @@ def installation():
         if stat.S_ISREG(info.st_mode) and info.st_nlink != 1:
             raise ValueError('linked_release_file')
     package = RELEASE_ROOT / 'scripts/confined_runtime/packaging'
+    runc_rule = Path('/etc/apparmor.d/local/runc')
+    protected(runc_rule, owner=0)
+    if runc_rule.read_bytes() != (package / 'runc-local.conf').read_bytes():
+        raise ValueError('installed_runtime_rule_mismatch')
     units = sorted(p for p in package.iterdir() if p.suffix in {'.service', '.slice', '.mount'})
     for source in units:
         installed = Path('/etc/systemd/system') / source.name

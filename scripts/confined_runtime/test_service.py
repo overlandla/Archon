@@ -15,6 +15,7 @@ from unittest.mock import patch
 from .admission import Release
 from .cleanup_service import ready, sweep
 from .journal import Journal
+from .oci import create_arguments
 from .runtime import NATIVE_CONFIG, Profile
 from .service import (
     compose,
@@ -76,6 +77,14 @@ class ServiceTests(unittest.TestCase):
             link.symlink_to(path)
             with self.assertRaises(ValueError):
                 protected(link, owner=os.geteuid())
+
+    def test_ambient_docker_configuration_is_not_an_execution_input(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'config.json').write_text('{"proxies":{"default":{"httpProxy":"http://foreign.invalid"}}}')
+            with patch('scripts.confined_runtime.oci.DOCKER_CONFIG', root):
+                with self.assertRaisesRegex(ValueError, 'unsupported_docker_client_configuration'):
+                    create_arguments(None, 'unreachable')
 
     def test_state_refuses_unbounded_filesystem_before_journal_open(self):
         with patch('scripts.confined_runtime.service.protected'), patch('scripts.confined_runtime.service.os.statvfs') as filesystem:

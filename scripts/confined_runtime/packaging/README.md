@@ -7,6 +7,9 @@ stock Archon service, expose its API, approve a release, or install anything.
 The Theseus complete-release approval registry stays empty. No operator profile
 or live VER evidence is supplied by this package.
 
+See [dedicated LXC controlled checks](../INSTALLED-CONFORMANCE.md) for the opt-in
+installed-service harness, its temporary host changes and restoration procedure.
+
 ## Exact supported candidate topology
 
 The candidate requires Linux x86-64, systemd with `LoadCredential`, cgroup v2,
@@ -29,6 +32,12 @@ read-only bind; they must never join the host's general `docker` group. Access
 to this dedicated daemon remains powerful trusted supervisor authority. It is
 not safe to give its socket or the `archon-confined` identity to model workers,
 repository automation, interactive agents or the existing Archon service.
+
+The Docker client uses the versioned empty `docker-client/config.json`; ambient
+service-account proxy configuration is not an execution input. The installed
+`/etc/apparmor.d/local/runc` must match `runc-local.conf`. This candidate targets
+the dedicated Ubuntu LXC profile described in the installed-check guide; loaded
+AppArmor policy still requires independent operator review.
 
 The original per-worker detached watchdog stays enabled. A second, independently
 supervised `archon-confined-cleanup.service` reads the durable ownership facts and
