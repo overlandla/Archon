@@ -65,7 +65,7 @@ class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
             self.changed.clear()
             try:
                 with self.supervisor.journal.connect() as connection:
-                    row = connection.execute("SELECT run_id, revision FROM confined_admissions WHERE deployment=? AND project=? AND state='admitted' ORDER BY rowid LIMIT 1",
+                    row = connection.execute("SELECT a.run_id, a.revision FROM confined_admissions a LEFT JOIN confined_child_control c ON c.run_id=a.run_id WHERE deployment=? AND project=? AND state='admitted' AND coalesce(c.blocked,0)=0 AND coalesce(c.stopped,0)=0 ORDER BY a.rowid LIMIT 1",
                                              (self.source["deployment"], self.source["project"])).fetchone()
                 if row is None:
                     self.changed.wait(1)
@@ -90,6 +90,58 @@ class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
                 "run_id": row["run_id"], "correlation_id": row["correlation"], "selection_digest": row["selection_digest"],
                 "state": row["state"], "revision": row["revision"], "diagnostic": row["diagnostic"],
                 "execution": facts, "effects": self.supervisor.journal.effect_projection(row["run_id"])}
+
+    def child_request(self, path, value):
+        children = getattr(self.supervisor.policy, "children", None)
+        if children is None:
+            raise ValueError("unsupported_child_runtime")
+        if path == "/v2/children/contract" and set(value) == {"source", "selection"}:
+            children.validate_selection(value["selection"])
+            return 200, {"format": "archon-child-control-v1", "source": self.source, "release": self.supervisor.release.selection(),
+                         "capabilities": ["pinned-workspace", "exact-lookup", "scope-consumption", "confirmed-stop", "adapter-reporting"]}
+        if path == "/v2/children/admissions" and set(value) == {"source", "selection", "correlation_id"}:
+            from .children import member
+            child = member(value["selection"])
+            if child["correlation_id"] != value["correlation_id"]:
+                raise ValueError("foreign_child_correlation")
+            # Exact replay must inspect before checking the now-occupied reserved
+            # path. The journal still rejects a changed selection under this key.
+            existing = self.supervisor.journal.find(self.source["deployment"], self.source["project"], value["correlation_id"])
+            if not existing:
+                children.validate_selection(value["selection"])
+            selection = {"release": child["selection"]["runtime_release"], "source": self.source,
+                         "handoff": child["selection"], "child": value["selection"]}
+            row = self.supervisor.admit(self.source["deployment"], self.source["project"], value["correlation_id"], selection)
+            children.initialize(row["run_id"])
+            self.changed.set()
+            return 202, children.record(row)
+        if path in {"/v2/children/lookup", "/v2/children/inspect"}:
+            import json
+            expected = {"source", "binding"} | ({"run_id"} if path.endswith("inspect") else set())
+            if set(value) != expected:
+                raise ValueError("invalid_child_lookup")
+            source = value["binding"]["source"]
+            if source["deployment"].rstrip('/') != self.source["deployment"] or source["project_id"] != self.source["project"]:
+                raise ValueError("foreign_child_source")
+            rows = self.supervisor.journal.find(self.source["deployment"], self.source["project"], value["binding"]["correlation"])
+            results = []
+            for row in rows:
+                if "child" not in json.loads(row["selection"]):
+                    raise AdmissionConflict("nonchild_correlation")
+                record = children.record(row)
+                if record["binding"] != value["binding"] or ("run_id" in value and record["run_id"] != value["run_id"]):
+                    raise AdmissionConflict("foreign_child_selection")
+                results.append(record)
+            if path.endswith("inspect"):
+                return (200, results[0]) if len(results) == 1 else (404, {"diagnostic": "run_not_found"})
+            return 200, {"complete": True, "binding": value["binding"], "runs": results}
+        if set(value) == {"source", "intent"}:
+            methods = {"/v2/children/stop": children.stop, "/v2/children/notify": children.notify, "/v2/children/reconcile": children.reconcile}
+            if path in methods:
+                result = methods[path](value["intent"])
+                self.changed.set()
+                return 200, result
+        raise ValueError("unsupported_child_operation")
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -122,7 +174,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             value = parse_json(self.rfile.read(int(lengths[0])))
             if not isinstance(value, dict) or value.get("source") != self.server.source:
                 raise ValueError("foreign_ingress_source")
-            if self.path == "/v1/contract" and set(value) == {"source"}:
+            if self.path.startswith("/v2/children/"):
+                status, result = self.server.child_request(self.path, value)
+                self.reply(status, result)
+            elif self.path == "/v1/contract" and set(value) == {"source"}:
                 self.reply(200, {"format": "archon-confined-control-v1", "source": self.server.source,
                                 "release": self.server.supervisor.release.selection()})
             elif self.path == "/v1/admissions" and set(value) == {"source", "correlation_id", "selection"}:

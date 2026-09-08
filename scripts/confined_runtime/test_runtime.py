@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from .admission import Rejected, Release
+from .journal import Journal
 from .runtime import NATIVE_CONFIG, Profile, Runtime
 from .source_authority import TheseusAuthority
 
@@ -22,7 +23,7 @@ class ProfileTests(unittest.TestCase):
                 'synthetic', 'https://model.invalid', 'synthetic')
             profile = replace(profile, release=replace(release, authority_configuration_revision=profile.configuration_revision()))
             profile.validate()
-            runtime = Runtime(None, profile)
+            runtime = Runtime(Journal(Path(directory) / "state.sqlite"), profile)
             profile.selected_repository['base'] = 'mutated'
             self.assertEqual(runtime.profile.selected_repository['base'], 'main')
             for change in ({'model': 'other'}, {'allowed_paths': frozenset({'deploy.sh'})}, {'repository_id': 2},

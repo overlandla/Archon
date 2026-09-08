@@ -60,7 +60,7 @@ def validate_runtime(identity):
 
 
 def prepare_repository(selection):
-    if (not isinstance(selection, dict) or set(selection) != {"base", "commit"}
+    if (not isinstance(selection, dict) or set(selection) not in ({"base", "commit"}, {"base", "commit", "workspace", "pinned"})
             or not isinstance(selection["base"], str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_/-]{0,199}", selection["base"])
             or "//" in selection["base"] or not isinstance(selection["commit"], str)
             or not re.fullmatch(r"[0-9a-f]{40}", selection["commit"])):
@@ -70,8 +70,12 @@ def prepare_repository(selection):
     spec.loader.exec_module(module)
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 8766), module.GitGateway)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    target = Path("/workspace/repository")
-    target.mkdir(mode=0o700)
+    target = Path(selection.get("workspace", "/workspace/repository"))
+    if "workspace" in selection:
+        if selection["pinned"] is not True or not target.is_absolute() or target.resolve() != target or not target.is_dir() or any(target.iterdir()):
+            raise ValueError("invalid_allocated_workspace")
+    else:
+        target.mkdir(mode=0o700)
     environment = {"PATH": "/usr/bin:/bin", "HOME": "/home/worker", "GIT_CONFIG_NOSYSTEM": "1",
                    "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_TERMINAL_PROMPT": "0"}
     git = ["git", "-c", "core.hooksPath=/dev/null", "-c", "credential.helper=",
@@ -80,7 +84,7 @@ def prepare_repository(selection):
     try:
         for arguments in (["init", "--template=/runtime/empty-template", "-q"],
                           ["fetch", "--depth=1", "--no-tags", "--no-recurse-submodules", "--no-auto-maintenance",
-                           "http://127.0.0.1:8766/repository.git", "refs/heads/" + selection["base"]]):
+                           "http://127.0.0.1:8766/repository.git", selection["commit"] if selection.get("pinned") else "refs/heads/" + selection["base"]]):
             subprocess.run(git + arguments, cwd=target, env=environment, check=True, timeout=45,
                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         actual = subprocess.check_output(git + ["rev-parse", "--verify", "FETCH_HEAD"], cwd=target, env=environment, timeout=5).decode().strip()

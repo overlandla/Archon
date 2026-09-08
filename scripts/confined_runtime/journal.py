@@ -39,6 +39,14 @@ class Journal:
                     diagnostic TEXT NOT NULL DEFAULT 'admitted',
                     UNIQUE(deployment, project, correlation)
                 );
+                CREATE TABLE IF NOT EXISTS confined_child_control (
+                    run_id TEXT PRIMARY KEY REFERENCES confined_admissions(run_id), revision INTEGER NOT NULL DEFAULT 0,
+                    stopped INTEGER NOT NULL DEFAULT 0, blocked INTEGER NOT NULL DEFAULT 0, notice_ack INTEGER NOT NULL DEFAULT 0, successor TEXT, consumed TEXT,
+                    handoff TEXT, notice TEXT, decision TEXT, stop_intent TEXT
+                );
+                CREATE TABLE IF NOT EXISTS confined_child_observations (
+                    run_id TEXT PRIMARY KEY REFERENCES confined_admissions(run_id), revision INTEGER NOT NULL, value TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS confined_run_facts (
                     run_id TEXT NOT NULL REFERENCES confined_admissions(run_id),
                     name TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(run_id, name)
@@ -103,6 +111,8 @@ class Journal:
             ).fetchone()
             if row["selection"] != encoded:
                 raise AdmissionConflict("correlation_selection_conflict")
+            if inserted and "child" in selection:
+                connection.execute("INSERT INTO confined_child_control(run_id) VALUES (?)", (run_id,))
             if inserted:
                 connection.execute("INSERT INTO confined_transitions VALUES (?, 0, 'admitted', 'admitted')", (run_id,))
             return dict(row)
@@ -134,6 +144,10 @@ class Journal:
             row = connection.execute("SELECT * FROM confined_admissions WHERE run_id=?", (run_id,)).fetchone()
             if row is None or row["revision"] != revision or row["state"] not in allowed:
                 raise AdmissionConflict("stale_admission_transition")
+            if event in {"check", "invoke", "finish"}:
+                control = connection.execute("SELECT stopped, blocked FROM confined_child_control WHERE run_id=?", (run_id,)).fetchone()
+                if control and (control["stopped"] or control["blocked"]):
+                    raise AdmissionConflict("child_execution_fenced")
             if event == "finish" and connection.execute(
                 "SELECT 1 FROM confined_effects WHERE run_id=? AND state IN ('started', 'uncertain') LIMIT 1",
                 (run_id,),
@@ -172,6 +186,9 @@ class Journal:
                 if previous["request"] != encoded:
                     raise AdmissionConflict("effect_identity_conflict")
                 return dict(previous), False
+            control = connection.execute("SELECT stopped, blocked FROM confined_child_control WHERE run_id=?", (run_id,)).fetchone()
+            if control and (control["stopped"] or control["blocked"]):
+                raise AdmissionConflict("child_effect_fenced")
             row = connection.execute("SELECT state FROM confined_admissions WHERE run_id=?", (run_id,)).fetchone()
             if row is None or row["state"] != "invoking":
                 raise AdmissionConflict("effect_outside_invocation")
@@ -231,12 +248,13 @@ class Journal:
             return json.loads(row["candidate"]) if row is not None else None
 
     def record_fact(self, run_id: str, name: str, value: dict) -> None:
-        if name not in {"source", "repository", "engine", "container", "bootstrap"} or len(canonical(value)) > 16384:
+        child_progress = name.startswith("child_progress:") and 0 < len(name.removeprefix("child_progress:")) <= 100
+        if (name not in {"source", "repository", "engine", "container", "bootstrap", "child_workspace"} and not child_progress) or len(canonical(value)) > 16384:
             raise ValueError("invalid_runtime_fact")
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute("SELECT state FROM confined_admissions WHERE run_id=?", (run_id,)).fetchone()
-            allowed = {"invoking"} if name in {"engine", "container", "bootstrap"} else {"checking"}
+            allowed = {"invoking"} if name in {"engine", "container", "bootstrap"} or child_progress else {"checking"}
             if row is None or row["state"] not in allowed:
                 raise AdmissionConflict("fact_outside_admission_phase")
             connection.execute("INSERT INTO confined_run_facts VALUES (?, ?, ?)", (run_id, name, canonical(value)))

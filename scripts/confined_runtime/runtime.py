@@ -17,6 +17,7 @@ from .action_server import Server as ActionServer
 from .actions import Actions
 from .admission import Rejected, Release
 from .closure import inspect as inspect_closure
+from .children import Children, ObservationSink
 from .exports import retain, validate
 from .git_read import Broker as GitBroker
 from .git_read import Policy as GitPolicy
@@ -93,11 +94,17 @@ class Runtime:
         # One dequeue owner per Runtime instance. Durable journal fences still
         # protect correlation when multiple service processes receive requests.
         self.pending = {}
+        self.children = Children(self)
 
     def capture(self, run_id, selection):
         p = self.profile
         p.validate()
-        if (set(selection) != {"release", "source", "handoff"}
+        chosen = self.children.validate_selection(selection["child"]) if "child" in selection else None
+        expected_repository = {**p.selected_repository, "base": chosen["commit"]} if chosen else p.selected_repository
+        if chosen:
+            self.children.initialize(run_id)
+            selection = {**selection, "handoff": self.children.handoff(run_id, selection["handoff"])}
+        if (set(selection) != ({"release", "source", "handoff", "child"} if chosen else {"release", "source", "handoff"})
                 or selection["release"] != p.release.selection()
                 or selection["source"] != {"deployment": p.authority.deployment, "project": p.authority.project}
                 or not isinstance(selection["handoff"], dict)
@@ -105,19 +112,19 @@ class Runtime:
                 or selection["handoff"].get("runtime_release") != p.release.selection()
                 or selection["handoff"].get("workflow_revision_format") != "archon-immutable-closure-v1"
                 or selection["handoff"].get("workflow_revision") != p.release.closure_revision
-                or selection["handoff"].get("repository") != p.selected_repository
+                or selection["handoff"].get("repository") != expected_repository
                 or selection["handoff"].get("workflow_identity") != p.release.identity):
             raise Rejected("unsupported")
         references = selection["handoff"].get("references")
         repositories = references.get("repositories") if isinstance(references, dict) else None
-        if (not isinstance(repositories, list) or len(repositories) != 1
-                or not isinstance(repositories[0], dict)
-                or repositories[0].get("canonical_ref") != p.selected_repository["canonical_ref"]):
+        if (not isinstance(repositories, list) or (not chosen and len(repositories) != 1)
+                or sum(isinstance(r, dict) and r.get("canonical_ref") == p.selected_repository["canonical_ref"] for r in repositories) != 1):
             raise Rejected("unsupported")
         temporary = tempfile.TemporaryDirectory(prefix="archon-confined-run-")
         root = Path(temporary.name).resolve()
         state = root / "state"
-        capture = state / "workspaces/_cwd/repository/artifacts/runs" / run_id / "workflow-source"
+        cwd = chosen["workspace"] if chosen else "/workspace/repository"
+        capture = state / "workspaces/_cwd" / Path(cwd).name / "artifacts/runs" / run_id / "workflow-source"
         capture.parent.mkdir(parents=True)
         try:
             stage(p.capture, capture)
@@ -126,7 +133,8 @@ class Runtime:
             temporary.cleanup()
             raise Rejected("source_mismatch") from None
         self.pending[run_id] = {"temporary": temporary, "root": root, "state": state, "capture": capture,
-                                "sealed": {**closure, "runId": run_id, "cwd": "/workspace/repository",
+                                "finished": threading.Event(), "cwd": cwd, "child": chosen,
+                                "sealed": {**closure, "runId": run_id, "cwd": cwd,
                                     "sourceRoot": "/input/approved-source", "captureRoot": str(capture),
                                     "workflowIdentity": p.release.identity, "model": p.model, "codexBinary": "/runtime/codex"}}
         self.journal.record_fact(run_id, "source", {"release": p.release.selection(), "native_digest": closure["workflowRevision"],
@@ -134,7 +142,7 @@ class Runtime:
         return closure["executableRevision"]
 
     def validate_authority(self, run_id, selection):
-        context = self.profile.authority.check(selection["handoff"])
+        context = self.profile.authority.check(self.children.handoff(run_id, selection["handoff"]) if "child" in selection else selection["handoff"])
         # Only the private context definition is transient. Selection and journal
         # retain references; neither persists copied mutable procedure text.
         self.pending[run_id]["context"] = context
@@ -151,15 +159,22 @@ class Runtime:
         pending = self.pending[run_id]
         if "context" not in pending:
             raise Rejected("stale_scope")
+        if "child" in selection:
+            self.children.handoff(run_id, selection["handoff"])
+            self.children.reserve(run_id, selection["child"])
         client = RepositoryHTTPS(p.owner, p.repository, p.github_credential)
         repository = client("GET", client.root, None)
         if repository.get("id") != p.repository_id or repository.get("full_name") != f"{p.owner}/{p.repository}":
             raise Rejected("unsupported")
         base = p.selected_repository["base"]
-        reference = client("GET", client.root + "/git/ref/heads/" + base, None)
-        commit = reference.get("object", {}).get("sha")
-        if reference.get("ref") != "refs/heads/" + base or reference.get("object", {}).get("type") != "commit" or not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
-            raise Rejected("unsupported")
+        if "child" in selection:
+            commit = selection["child"]["allocation"]["children"]
+            commit = next(c["commit"] for c in commit if c["child_id"] == selection["child"]["child_id"])
+        else:
+            reference = client("GET", client.root + "/git/ref/heads/" + base, None)
+            commit = reference.get("object", {}).get("sha")
+            if reference.get("ref") != "refs/heads/" + base or reference.get("object", {}).get("type") != "commit" or not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+                raise Rejected("unsupported")
         definition = client("GET", client.root + "/git/commits/" + commit, None)
         tree = definition.get("tree", {}).get("sha")
         if definition.get("sha") != commit or not isinstance(tree, str) or not re.fullmatch(r"[0-9a-f]{40}", tree):
@@ -175,18 +190,22 @@ class Runtime:
         root, state, capture = (pending[key] for key in ("root", "state", "capture"))
         context = pending.pop("context")
         row = self._row(run_id)
-        references = selection["handoff"]["references"]
+        handoff = self.children.handoff(run_id, selection["handoff"]) if "child" in selection else selection["handoff"]
+        references = handoff["references"]
         task_id = int(references["task"]["path"].rsplit("/", 1)[1])
         binding = Binding(p.authority.project, task_id, references["scope"]["selected"]["identity"],
                           references["work_unit"]["identity"], references["work_unit_graph"]["identity"], row["correlation"], run_id)
         def check():
-            return p.authority.check(selection["handoff"])
+            return p.authority.check(self.children.handoff(run_id, selection["handoff"]) if "child" in selection else selection["handoff"])
         publication_policy = PublicationPolicy(p.owner, p.repository, p.repository_id, run_id,
             p.selected_repository["base"], pending["commit"], pending["tree"], p.allowed_paths, pending["commit"], p.automation_mode)
         publisher = Publisher(publication_policy, pending["client"], check,
             lambda candidate: self.journal.retain_candidate(run_id, "publish", publication_operation[0], candidate))
-        progress_client = HTTPS(Origin(urlsplit(p.authority.deployment).hostname, p.authority.credential), frozenset({("POST", binding.path)}))
-        reporter = Reporter(binding, progress_client, check)
+        if "child" in selection:
+            reporter = ObservationSink(self.journal, run_id, check)
+        else:
+            progress_client = HTTPS(Origin(urlsplit(p.authority.deployment).hostname, p.authority.credential), frozenset({("POST", binding.path)}))
+            reporter = Reporter(binding, progress_client, check)
         exports = {}
         publication_operation = []
         def export(operation_id, request):
@@ -209,12 +228,14 @@ class Runtime:
         config, request, seccomp = (root / name for name in ("native.toml", "request.json", "seccomp.json"))
         config.write_text(NATIVE_CONFIG)
         request.write_text(canonical({**pending["sealed"], "authoritativeContext": canonical(context),
-                                     "repositorySelection": {"base": p.selected_repository["base"], "commit": pending["commit"]},
+                                     "repositorySelection": {"base": p.selected_repository["base"], "commit": pending["commit"],
+                                         **({"workspace": pending["cwd"], "pinned": True} if "child" in selection else {})},
+                                     **({"scopeReceipt": references["scope"]["selected"]} if "child" in selection else {}),
                                      "runtimeIdentity": {"workerRevision": p.release.worker_revision, "providerRevision": p.release.provider_revision,
                                          "nativeConfigurationRevision": p.release.native_configuration_revision}}))
         del context
         seccomp.write_text(canonical(seccomp_policy()))
-        for target in tmpfs(state, capture):
+        for target in tmpfs(state, capture, pending["cwd"] if "child" in selection else None):
             if Path(target).is_relative_to(state):
                 Path(target).mkdir(parents=True, exist_ok=True)
         for entry in [state, *state.rglob("*"), repository, config, request]:
@@ -225,10 +246,12 @@ class Runtime:
         servers, started = [], []
         cleanup_errors = []
         try:
-            lifecycle = Lifecycle(sockets / "lifecycle.sock", run_id, authorize=check)
+            lifecycle = Lifecycle(sockets / "lifecycle.sock", run_id, authorize=check,
+                consume=(lambda scope: self.children.consumed(run_id, scope)) if "child" in selection else None)
             model = ModelPolicy(p.model_origin, p.model, p.model_credential)
             servers.append(ModelBroker(sockets / "model.sock", model))
             servers.append(ActionServer(sockets / "actions.sock", actions))
+            pending["actions"] = servers[1]
             servers.append(GitBroker(sockets / "git.sock", GitPolicy(p.owner, p.repository, pending["commit"], p.github_credential)))
             for name in ("model.sock", "actions.sock", "git.sock"):
                 (sockets / name).chmod(0o666)
@@ -237,8 +260,9 @@ class Runtime:
                 thread.start()
                 started.append((server, thread))
             result = run(Inputs(p.image, request, repository, state, capture, config,
-                sockets / "model.sock", sockets / "actions.sock", sockets / "lifecycle.sock", seccomp, sockets / "git.sock"),
-                retain_owner=lambda owner: self.journal.record_fact(run_id, "container", owner))
+                sockets / "model.sock", sockets / "actions.sock", sockets / "lifecycle.sock", seccomp, sockets / "git.sock", pending["cwd"] if "child" in selection else None),
+                retain_owner=lambda owner: self.journal.record_fact(run_id, "container", owner),
+                authorize_start=check)
             servers[1].seal_and_drain()
             outcome = lifecycle.await_outcome()
             if result.returncode != 0 or result.timed_out:
@@ -283,3 +307,4 @@ class Runtime:
         for entry in [state, *state.rglob("*")]:
             entry.chmod(0o700 if entry.is_dir() else 0o600)
         pending["temporary"].cleanup()
+        pending["finished"].set()

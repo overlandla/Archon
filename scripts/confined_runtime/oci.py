@@ -20,7 +20,7 @@ DOCKER_CONFIG = Path(__file__).resolve().parent / "packaging/docker-client"
 DOCKER = ["/usr/bin/docker", "--config", str(DOCKER_CONFIG), "--host", "unix:///var/run/docker.sock"]
 ENV = {"PATH": "/usr/local/bin:/usr/bin:/bin"}
 MEMORY = 1024 * 1024 * 1024
-def tmpfs(state: Path, capture: Path):
+def tmpfs(state: Path, capture: Path, workspace: str | None = None):
     project = capture.parents[3]
     # Legacy Docker graph drivers preserve private host ancestor modes when
     # creating nested mount targets. Supply root-owned, traversable container-only
@@ -29,6 +29,7 @@ def tmpfs(state: Path, capture: Path):
                  for parent in state.parents if parent.is_relative_to('/tmp') and parent != Path('/tmp')}
     return {
         **ancestors,
+        **({workspace: "rw,nosuid,nodev,size=512m,mode=0700,uid=65532,gid=65532"} if workspace else {}),
         "/workspace": "rw,nosuid,nodev,size=512m,mode=0700,uid=65532,gid=65532",
         str(capture.parent): "rw,nosuid,nodev,size=128m,mode=0700,uid=65532,gid=65532",
         str(project / "state"): "rw,nosuid,nodev,size=32m,mode=0700,uid=65532,gid=65532",
@@ -66,6 +67,7 @@ class Inputs:
     lifecycle_socket: Path
     seccomp: Path
     git_socket: Path | None = None
+    workspace: str | None = None
 
     def mounts(self):
         mounts = {
@@ -108,7 +110,7 @@ def create_arguments(inputs: Inputs, name: str) -> list[str]:
         "--env", "HOME=/home/worker", "--env", "CODEX_HOME=/home/worker/.codex",
         "--env", f"ARCHON_HOME={inputs.state}", "--env", "DATABASE_URL=", "--env", "LOG_LEVEL=error",
         "--env", "GIT_CONFIG_NOSYSTEM=1", "--env", "GIT_CONFIG_GLOBAL=/dev/null"]
-    for target, options in tmpfs(inputs.state, inputs.capture).items():
+    for target, options in tmpfs(inputs.state, inputs.capture, inputs.workspace).items():
         args += ["--tmpfs", f"{target}:{options}"]
     for target, source in inputs.mounts().items():
         args += ["--mount", f"type=bind,source={source},target={target},readonly"]
@@ -121,7 +123,7 @@ def inspect_created(container: dict, inputs: Inputs) -> None:
     expected = {"NetworkMode": "none", "ReadonlyRootfs": True, "Privileged": False,
                 "Memory": MEMORY, "MemorySwap": MEMORY, "NanoCpus": 2_000_000_000,
                 "PidsLimit": 128, "ShmSize": 16 * 1024 * 1024, "IpcMode": "private",
-                "CgroupnsMode": "private", "PidMode": "", "UTSMode": "", "Tmpfs": tmpfs(inputs.state, inputs.capture)}
+                "CgroupnsMode": "private", "PidMode": "", "UTSMode": "", "Tmpfs": tmpfs(inputs.state, inputs.capture, inputs.workspace)}
     if any(host.get(key) != value for key, value in expected.items()):
         raise RuntimeError("oci_enforcement_mismatch")
     if host.get("CapDrop") != ["ALL"] or host.get("CapAdd") or host.get("Devices") or host.get("DeviceRequests"):
@@ -142,7 +144,7 @@ def inspect_created(container: dict, inputs: Inputs) -> None:
         raise RuntimeError("oci_log_storage_unbounded")
 
 
-def run(inputs: Inputs, *, timeout: float = 300, retain_owner=None) -> WorkerExit:
+def run(inputs: Inputs, *, timeout: float = 300, retain_owner=None, authorize_start=None) -> WorkerExit:
     if not 0 < timeout <= 900:
         raise ValueError("oci_timeout_out_of_range")
     name = "archon-confined-" + str(uuid4())
@@ -168,6 +170,8 @@ def run(inputs: Inputs, *, timeout: float = 300, retain_owner=None) -> WorkerExi
             raise RuntimeError("worker_lease_expired")
         # Attach before start. The daemon owns and limits the complete process
         # tree; the worker never receives the daemon socket or host descriptors.
+        if authorize_start is not None:
+            authorize_start()
         process = subprocess.Popen(DOCKER + ["start", "--attach", name], env=ENV,
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         buffers = [bytearray(), bytearray()]

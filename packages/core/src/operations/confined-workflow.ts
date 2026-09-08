@@ -2,6 +2,7 @@
  * The supervisor owns admission, freshness, mounts and the durable run identity.
  * This module neither accepts network requests nor establishes confinement.
  */
+import { readSync, writeSync } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
 import { createHash } from 'node:crypto';
 import { lstat, readdir, readFile } from 'node:fs/promises';
@@ -64,10 +65,19 @@ export const executionInvocationSchema = sealedInvocationSchema.extend({
       nativeConfigurationRevision: z.string().regex(/^[0-9a-f]{64}$/),
     })
     .optional(),
+  scopeReceipt: z
+    .strictObject({
+      kind: z.literal('scope_revision'),
+      identity: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/),
+      path: z.string(),
+    })
+    .optional(),
   repositorySelection: z
     .strictObject({
       base: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_/-]{0,199}$/),
       commit: z.string().regex(/^[0-9a-f]{40}$/),
+      workspace: z.string().startsWith('/').optional(),
+      pinned: z.literal(true).optional(),
     })
     .optional(),
 });
@@ -340,6 +350,19 @@ export async function executeConfinedWorkflow(raw: unknown): Promise<string> {
         'INSERT INTO remote_agent_conversations (id, platform_type, platform_conversation_id) VALUES ($1, $2, $3)',
         [input.runId, 'confined', input.runId]
       );
+      if (input.scopeReceipt !== undefined) {
+        const fd = Number(process.env.ARCHON_CONTROL_FD);
+        if (!Number.isSafeInteger(fd) || fd < 3) throw new Error('missing_scope_receipt_channel');
+        writeSync(fd, JSON.stringify({ run_id: input.runId, scope: input.scopeReceipt }) + '\n');
+        const permission = Buffer.alloc(9);
+        let received = 0;
+        while (received < permission.length) {
+          const count = readSync(fd, permission, received, permission.length - received, null);
+          if (count === 0) throw new Error('Scope consumption permission missing');
+          received += count;
+        }
+        if (permission.toString() !== 'consumed\n') throw new Error('Scope consumption denied');
+      }
       const result = await executeWorkflow(
         deps,
         {

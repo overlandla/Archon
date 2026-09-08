@@ -14,9 +14,10 @@ from .admission import Rejected
 
 
 class Lifecycle:
-    def __init__(self, path: Path, run_id: str, timeout=360, authorize=None):
+    def __init__(self, path: Path, run_id: str, timeout=360, authorize=None, consume=None):
         self.path, self.run_id = path, run_id
         self.authorize = authorize
+        self.consume = consume
         self.outcome = None
         self.error = None
         self.rejection = None
@@ -45,6 +46,18 @@ class Lifecycle:
             if self.authorize is not None:
                 self.authorize()
             connection.sendall(b"ready\n")
+            if self.consume is not None:
+                receipt = bytearray()
+                while not receipt.endswith(b"\n") and len(receipt) <= 4096:
+                    chunk = connection.recv(1)
+                    if not chunk:
+                        raise ValueError("scope_receipt_missing")
+                    receipt.extend(chunk)
+                value = json.loads(receipt)
+                if set(value) != {"run_id", "scope"} or value["run_id"] != self.run_id:
+                    raise ValueError("scope_receipt_mismatch")
+                self.consume(value["scope"])
+                connection.sendall(b"consumed\n")
             content = bytearray()
             while chunk := connection.recv(4097 - len(content)):
                 content.extend(chunk)
