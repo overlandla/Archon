@@ -7,15 +7,24 @@ import sysconfig
 from pathlib import Path
 
 
+def import_files(root):
+    """Directory aliases hide descendants from rglob and cannot define imports."""
+    for path in root.rglob('*'):
+        if path.is_symlink() and path.is_dir():
+            raise ValueError('unsupported_import_directory_alias')
+        yield path
+
+
 def revision() -> str:
     package = Path(__file__).parent
     adapter = importlib.util.find_spec("archon_adapter")
     if adapter is None or not adapter.submodule_search_locations:
         raise RuntimeError("canonical_authority_component_missing")
-    digest = hashlib.sha256(b"archon-trusted-policy-v1\0")
-    for prefix, root in (("runtime", package), ("authority", Path(next(iter(adapter.submodule_search_locations))))):
-        files = sorted(path for path in root.rglob("*") if path.is_file() and (path.suffix == ".py" or (prefix == "authority" and path.is_relative_to(root / "schemas") and path.suffix == ".json")) and not path.name.startswith("test_")
-                       and not path.name.endswith(("_test.py", "conformance.py")) and path.name not in {"conformance.py", "controlled_suite.py"})
+    digest = hashlib.sha256(b"archon-trusted-policy-v2\0")
+    for prefix, root in (("runtime", package.parent), ("authority", Path(next(iter(adapter.submodule_search_locations))))):
+        files = sorted(path for path in import_files(root) if path.is_file() and
+                       (path.suffix in {".py", ".so"} or
+                        (prefix == "authority" and path.is_relative_to(root / "schemas") and path.suffix == ".json")))
         for path in files:
             content = path.read_bytes()
             if len(content) > 1024 * 1024:
@@ -34,13 +43,22 @@ def revision() -> str:
     digest.update(sys.version.encode() + b"\0")
     inputs = {"python": Path(sys.executable)}
     stdlib = Path(sysconfig.get_path("stdlib"))
-    for path in stdlib.rglob("*"):
+    for path in import_files(stdlib):
         relative = path.relative_to(stdlib)
-        if "site-packages" in relative.parts or "__pycache__" in relative.parts:
+        if "site-packages" in relative.parts:
             continue
-        if path.is_file() and path.suffix in {".py", ".so"}:
+        if path.is_file() and path.suffix in {".py", ".so", ".pyc"}:
             inputs["stdlib/" + relative.as_posix()] = path
+    # Startup precedes our source-only loader. Bind any cached stdlib bytecode
+    # and the interpreter's default ZIP, including when it is beside stdlib.
+    for root in {Path(sys.base_prefix), Path(sys.base_exec_prefix)}:
+        archive = root / 'lib' / f'python{sys.version_info.major}{sys.version_info.minor}.zip'
+        if archive.is_file():
+            inputs['startup/' + str(archive)] = archive
+    dependency_roots = {Path(root) for root in sys.path
+                        if Path(root).name == 'site-packages' and Path(root).is_dir()}
     for distribution in sorted(importlib.metadata.distributions(), key=lambda value: value.metadata["Name"]):
+        dependency_roots.add(Path(distribution.locate_file("")))
         name = distribution.metadata["Name"]
         digest.update((name + "==" + distribution.version + "\0").encode())
         if name.lower().replace("_", "-") == "theseus-archon-adapter":
@@ -51,6 +69,12 @@ def revision() -> str:
             path = Path(distribution.locate_file(file))
             if path.is_file():
                 inputs["distribution/" + name + "/" + str(file)] = path
+    # RECORD is not an import allowlist. Include unregistered source/extensions
+    # and adapter extensions from every installed dependency root as well.
+    for root in sorted(dependency_roots):
+        for path in import_files(root):
+            if path.is_file() and path.suffix in {'.py', '.so'}:
+                inputs['import-root/' + str(root) + '/' + path.relative_to(root).as_posix()] = path
     total = 0
     for name, path in sorted(inputs.items()):
         digest.update(name.encode() + b"\0")

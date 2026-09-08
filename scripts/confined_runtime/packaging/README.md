@@ -105,14 +105,21 @@ are absent. Reboot clears staging; durable admissions still prevent reinvocation
    release root. Place the environment at `venv/` and the engine-produced immutable
    workflow capture at `capture/`. Make the complete tree root-owned and
    non-writable by service or worker identities. Venv links may target only
-   root-protected OS or release files. The entry uses Python `-I -B`, ignoring
-   ambient import configuration and avoiding runtime bytecode writes.
+   root-protected OS or release files. Admission, cleanup and watchdog use `-I -S -B -X pycache_prefix=/dev/null`
+   through the same source-only bootstrap. It compiles Python source directly,
+   rejects sourceless/ZIP imports, skips `.pth` and `sitecustomize`, and adds only
+   the fixed venv dependency directory. The release root is never a general
+   import root. Interpreter startup bytecode/ZIP inputs are also hashed; native
+   loader libraries remain part of the separately reviewed host inventory.
 4. Produce the complete release tuple using `Release`, closure inspection,
    `policy_identity.revision()`, the native configuration digest and
    `Profile.configuration_revision()` from that final environment. The policy
    digest includes the packaged unit, mount, slice, daemon JSON and containerd TOML configuration files.
    Preserve all eight release identity fields; never approve only the image or
-   binary. Changing packaging invalidates previous policy evidence.
+   binary. The digest also covers all importable source/extensions in the scripts and
+   dependency roots, including files absent from wheel RECORDs. Directory symlinks
+   inside import roots are unsupported; explicit interpreter/venv layout aliases remain allowed. Changing packaging,
+   installed import contents or startup artifacts invalidates previous policy evidence.
 5. Prepare `profile.json` using the structure below and synthetic credentials for
    controlled testing. Compare the selected repository mapping with the canonical
    #524 mapping. Allowed paths must be explicit regular-file paths. Independently
