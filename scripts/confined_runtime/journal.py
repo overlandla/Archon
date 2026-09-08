@@ -249,12 +249,16 @@ class Journal:
 
     def record_fact(self, run_id: str, name: str, value: dict) -> None:
         child_progress = name.startswith("child_progress:") and 0 < len(name.removeprefix("child_progress:")) <= 100
-        if (name not in {"source", "repository", "engine", "container", "bootstrap", "child_workspace"} and not child_progress) or len(canonical(value)) > 16384:
+        if (name not in {"source", "repository", "engine", "container", "bootstrap", "child_workspace", "owner_drained"} and not child_progress) or len(canonical(value)) > 16384:
             raise ValueError("invalid_runtime_fact")
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute("SELECT state FROM confined_admissions WHERE run_id=?", (run_id,)).fetchone()
             allowed = {"invoking"} if name in {"engine", "container", "bootstrap"} or child_progress else {"checking"}
+            if name == "owner_drained":
+                allowed = {"finished", "uncertain", "rejected"}
+                if value != {"drained": True}:
+                    raise ValueError("invalid_owner_drain_fact")
             if row is None or row["state"] not in allowed:
                 raise AdmissionConflict("fact_outside_admission_phase")
             connection.execute("INSERT INTO confined_run_facts VALUES (?, ?, ?)", (run_id, name, canonical(value)))

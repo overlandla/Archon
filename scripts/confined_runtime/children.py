@@ -219,7 +219,8 @@ class Children:
             connection.execute('BEGIN IMMEDIATE')
             latest = connection.execute('SELECT state FROM confined_admissions WHERE run_id=?', (row['run_id'],)).fetchone()
             control = connection.execute('SELECT * FROM confined_child_control WHERE run_id=?', (row['run_id'],)).fetchone()
-            if latest['state'] != 'admitted' or control['notice'] != canonical(intent['notice']) or control['stopped']:
+            if (latest['state'] != 'admitted' or control['notice'] != canonical(intent['notice']) or control['stopped'] or not control['notice_ack']
+                    or (control['decision'] is not None and control['decision'] != canonical(intent))):
                 raise AdmissionConflict('child_reconciliation_changed')
             connection.execute('UPDATE confined_child_control SET handoff=?, decision=?, blocked=0, revision=revision+1 WHERE run_id=?',
                                (canonical(current), canonical(intent), row['run_id']))
@@ -246,7 +247,7 @@ class Children:
         # A DB fence prevents new dequeue/effects; only a queued run or a
         # drained owner proves its already-running descendants have stopped.
         latest, facts = self.journal.inspect_run(run)
-        if latest['state'] in {'admitted', 'finished', 'rejected'}:
+        if facts.get('owner_drained') == {'drained': True} or latest['state'] in {'admitted', 'finished', 'rejected'}:
             return True
         pending = self.runtime.pending.get(run)
         if pending is None:

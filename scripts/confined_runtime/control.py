@@ -96,6 +96,7 @@ class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
         if children is None:
             raise ValueError("unsupported_child_runtime")
         if path == "/v2/children/contract" and set(value) == {"source", "selection"}:
+            children.runtime.profile.validate()
             children.validate_selection(value["selection"])
             return 200, {"format": "archon-child-control-v1", "source": self.source, "release": self.supervisor.release.selection(),
                          "capabilities": ["pinned-workspace", "exact-lookup", "scope-consumption", "confirmed-stop", "adapter-reporting"]}

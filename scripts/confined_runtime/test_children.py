@@ -118,3 +118,42 @@ class ChildTests(unittest.TestCase):
             self.assertEqual(client.recv(9),b'')
         with self.assertRaises(RuntimeError):
             channel.await_outcome()
+
+    def test_drained_owner_fact_survives_restart_without_false_unknown_stop(self):
+        self.invoking()
+        self.journal.transition(self.run,2,'uncertain')
+        self.journal.record_fact(self.run,'owner_drained',{'drained':True})
+        restarted = Children(self.runtime)
+        self.assertTrue(restarted.stop(self.intent)['stopped'])
+        self.assertEqual(restarted.record(self.row)['state'],'cancelled')
+
+    def test_concurrent_reconciliation_cannot_replace_retained_decision(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier
+        references = {'source':self.selection['allocation']['source'], 'task':{}, 'work_unit':{}, 'repositories':[],
+                      'scope':{'selected':self.scope}, 'instructions':{'accepted_revision':str(uuid4())}}
+        original = {'references':references}
+        row = self.journal.admit('https://theseus.example.test',1000,'concurrent-decision',{'child':self.selection,'handoff':original})
+        run = row['run_id']
+        notice = {**self.intent,'run_id':run,'successor':{**self.scope,'path':'/api/projects/1000/tasks/42/scope-revisions/3'}}
+        self.assertTrue(self.children.notify(notice)['blocked'])
+        current = {**references,'scope':{'selected':notice['successor']}}
+        barrier = Barrier(2)
+        self.runtime.profile.authority = SimpleNamespace(check=lambda selection:barrier.wait(timeout=3))
+        intents = [{'id':str(uuid4()),'notice':notice,'handoff':current} for _ in range(2)]
+        def reconcile(intent):
+            try:
+                return self.children.reconcile(intent)
+            except AdmissionConflict as error:
+                return error
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(reconcile,intents))
+        self.assertEqual(sum(isinstance(r,AdmissionConflict) for r in results),1)
+        accepted = next(r['intent'] for r in results if isinstance(r,dict))
+        self.assertEqual(json.loads(self.children.state(run)['decision']),accepted)
+        # Replaying the acknowledged notice after reconciliation is historical;
+        # it must not drain or reblock the worker consuming that successor.
+        self.journal.transition(run,0,'check')
+        self.journal.transition(run,1,'invoke')
+        self.assertTrue(self.children.notify(notice)['blocked'])
+        self.assertFalse(self.children.state(run)['blocked'])

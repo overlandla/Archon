@@ -302,9 +302,10 @@ class Runtime:
             return
         if pending.get("cleanup_blocked"):
             raise RuntimeError("runtime_cleanup_uncertain")
-        self.pending.pop(run_id)
         state = pending["state"]
         for entry in [state, *state.rglob("*")]:
             entry.chmod(0o700 if entry.is_dir() else 0o600)
         pending["temporary"].cleanup()
+        self.journal.record_fact(run_id, "owner_drained", {"drained": True})
         pending["finished"].set()
+        self.pending.pop(run_id)
