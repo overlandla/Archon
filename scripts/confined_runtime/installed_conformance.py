@@ -26,7 +26,7 @@ from uuid import uuid4
 ROOT = Path('/var/lib/archon-conformance')
 RELEASE = Path('/opt/archon-confined/release')
 IMAGE = 'sha256:1b6a4c7356815e450b1bf36a175cc071d3c076b294028727de8cf6e25eef6c78'
-NAMES = ('theseus.example.test', 'model.example.test', 'api.github.com', 'github.com')
+NAMES = ('reqtory.example.test', 'model.example.test', 'api.github.com', 'github.com')
 
 
 def fixtures():
@@ -113,7 +113,7 @@ def prepare(worker):
     release = Release('theseus-implementation', capture['executableRevision'], hashlib.sha256(worker.read_bytes()).hexdigest(),
         'bbc3341e44c9ead340ed9570c17be936e37870f570751a941699ffd04d672827', IMAGE.removeprefix('sha256:'), revision(),
         hashlib.sha256(NATIVE_CONFIG.encode()).hexdigest(), '0' * 64)
-    profile = Profile(release, IMAGE, RELEASE / 'capture', 'fixture-model', TheseusAuthority('https://theseus.example.test', 1000, secret['theseus']),
+    profile = Profile(release, IMAGE, RELEASE / 'capture', 'fixture-model', TheseusAuthority('https://reqtory.example.test', 1000, secret['theseus']),
         selected, 'overlandla', 'theseus', 42, frozenset({'src/implementation.py'}), 'operator-isolated-actions-disabled',
         secret['github'], 'https://model.example.test', secret['model'])
     release = replace(release, authority_configuration_revision=profile.configuration_revision())
@@ -195,7 +195,7 @@ def serve():
                     body = self.rfile.read(length)
                     content_type = 'application/json'
                     if self.path.startswith('/fixture/'):
-                        if self.command != 'POST' or host != 'theseus.example.test':
+                        if self.command != 'POST' or host != 'reqtory.example.test':
                             self.send_error(403)
                             return
                         mode = json.loads(body)['mode']

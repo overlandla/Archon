@@ -49,7 +49,7 @@ class Checks:
         return result
 
     def fixture(self, mode):
-        connection = http.client.HTTPSConnection('theseus.example.test', timeout=15, context=ssl.create_default_context())
+        connection = http.client.HTTPSConnection('reqtory.example.test', timeout=15, context=ssl.create_default_context())
         connection.request('POST', '/fixture/mode', json.dumps({'mode': mode}),
             {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + self.secret['theseus']})
         response = connection.getresponse()

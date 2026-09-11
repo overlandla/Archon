@@ -173,7 +173,7 @@ def exercise(image: str, worker: Path, native: Path, case="current"):
             hashlib.sha256(native.read_bytes()).hexdigest(), image.removeprefix("sha256:"), policy_revision(),
             hashlib.sha256(NATIVE_CONFIG.encode()).hexdigest(), "0" * 64)
         profile = Profile(release, image, Path(captured["captureRoot"]), "fixture-model",
-            TheseusAuthority("https://theseus.example.test", 1000, "synthetic-source-credential"), selected_repository,
+            TheseusAuthority("https://reqtory.example.test", 1000, "synthetic-source-credential"), selected_repository,
             "overlandla", "theseus", 42, frozenset({"src/implementation.py"}), "operator-isolated-actions-disabled",
             "synthetic-github-credential", "https://model.example.test", "synthetic-model-credential")
         release = replace(release, authority_configuration_revision=profile.configuration_revision())
